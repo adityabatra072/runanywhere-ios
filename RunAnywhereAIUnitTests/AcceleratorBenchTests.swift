@@ -14,14 +14,45 @@ import RunAnywhere
 final class AcceleratorBenchTests: XCTestCase {
     // MARK: - Accelerator mapping
 
-    func testFrameworksMapToTheSiliconThatRunsThem() {
-        XCTAssertEqual(BenchAccelerator(framework: .coreml), .ane)
-        XCTAssertEqual(BenchAccelerator(framework: .mlx), .gpu)
-        XCTAssertEqual(BenchAccelerator(framework: .llamaCpp), .cpu)
-        XCTAssertEqual(BenchAccelerator(framework: .onnx), .cpu)
-        // Anything unmodelled must not silently claim an accelerator.
-        XCTAssertEqual(BenchAccelerator(framework: .foundationModels), .other)
-        XCTAssertEqual(BenchAccelerator(framework: .qhexrt), .other)
+    /// Placement is read from what the runtime reports, because the framework
+    /// alone lies: on Apple hardware llama.cpp offloads to Metal, so mapping
+    /// `.llamaCpp` to `.cpu` once put "CPU" on a contender measured running
+    /// 15/15 layers on an A16 GPU.
+    func testPlacementIsReadFromTheRuntimeNotTheFramework() {
+        XCTAssertEqual(BenchAccelerator(deviceKind: "gpu", framework: .llamaCpp), .gpu)
+        XCTAssertEqual(BenchAccelerator(deviceKind: "Metal", framework: .llamaCpp), .gpu)
+        XCTAssertEqual(BenchAccelerator(deviceKind: "cpu", framework: .llamaCpp), .cpu)
+        XCTAssertEqual(BenchAccelerator(deviceKind: "npu", framework: .coreml), .ane)
+        XCTAssertEqual(BenchAccelerator(deviceKind: "neural-engine", framework: .coreml), .ane)
+        // An empty kind is the only case allowed to fall back to a guess.
+        XCTAssertEqual(BenchAccelerator(deviceKind: "", framework: .mlx), .gpu)
+    }
+
+    func testPreLoadGuessTreatsLlamaCppAsMetalOnApple() {
+        XCTAssertEqual(BenchAccelerator(assumingFrom: .coreml), .ane)
+        XCTAssertEqual(BenchAccelerator(assumingFrom: .mlx), .gpu)
+        // Not .cpu: llama.cpp takes Metal unless CPU is requested at load.
+        XCTAssertEqual(BenchAccelerator(assumingFrom: .llamaCpp), .gpu)
+        XCTAssertEqual(BenchAccelerator(assumingFrom: .onnx), .cpu)
+        XCTAssertEqual(BenchAccelerator(assumingFrom: .foundationModels), .other)
+        XCTAssertEqual(BenchAccelerator(assumingFrom: .qhexrt), .other)
+    }
+
+    func testPlacementFlagsARequestTheRuntimeDidNotHonour() {
+        let honoured = BenchPlacement(
+            requested: .cpu, actual: .cpu, actualBackend: .llamaCpp,
+            deviceName: "CPU", deviceKind: "cpu", fallbackReason: nil
+        )
+        XCTAssertFalse(honoured.divergedFromRequest)
+
+        let silentlyMoved = BenchPlacement(
+            requested: .cpu, actual: .gpu, actualBackend: .llamaCpp,
+            deviceName: "Apple A16 GPU", deviceKind: "gpu", fallbackReason: nil
+        )
+        XCTAssertTrue(
+            silentlyMoved.divergedFromRequest,
+            "asking for CPU and getting Metal must be visible, not swallowed"
+        )
     }
 
     func testAneSortsFirstBecauseItIsTheSubjectOfTheBench() {
@@ -71,6 +102,53 @@ final class AcceleratorBenchTests: XCTestCase {
         let result = Self.contention(quietTokensPerSecond: 0, loadedTokensPerSecond: 40)
         XCTAssertNil(result.latencyDeltaPercent)
         XCTAssertNil(result.throughputRetentionPercent)
+    }
+
+    /// A delta the size of the noise it sits in has not been measured. Without
+    /// this the panel would present a real 3% and a coin-flip 3% identically.
+    func testDeltaSmallerThanTheRunToRunSpreadIsFlaggedAsNoise() {
+        // 2% effect buried in a 40% spread.
+        let buried = Self.contention(
+            quietTokensPerSecond: 100, loadedTokensPerSecond: 98, jitter: 0.4
+        )
+        XCTAssertEqual(buried.deltaExceedsNoise, false)
+
+        // Halved throughput against a tight spread is a real effect.
+        let clear = Self.contention(
+            quietTokensPerSecond: 100, loadedTokensPerSecond: 50, jitter: 0.02
+        )
+        XCTAssertEqual(clear.deltaExceedsNoise, true)
+    }
+
+    func testMediansDriveTheDeltaSoOneOutlierPassCannotSetIt() {
+        let result = BenchContentionResult(
+            contender: Self.contender(),
+            quietPasses: [
+                Self.pass(tokensPerSecond: 100),
+                Self.pass(tokensPerSecond: 100),
+                // One absurd run, of the kind DVFS settling produces.
+                Self.pass(tokensPerSecond: 1000)
+            ],
+            loadedPasses: [
+                Self.pass(tokensPerSecond: 50),
+                Self.pass(tokensPerSecond: 50),
+                Self.pass(tokensPerSecond: 50)
+            ],
+            loadThreads: 3
+        )
+        // Median of the quiet condition is 100, not the 400 a mean would give.
+        XCTAssertEqual(try XCTUnwrap(result.quietTokensPerSecond), 100, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(result.latencyDeltaPercent), 100, accuracy: 0.001)
+    }
+
+    func testRepetitionCountIsTheSmallerOfTheTwoConditions() {
+        let result = BenchContentionResult(
+            contender: Self.contender(),
+            quietPasses: [Self.pass(tokensPerSecond: 100), Self.pass(tokensPerSecond: 100)],
+            loadedPasses: [Self.pass(tokensPerSecond: 50)],
+            loadThreads: 3
+        )
+        XCTAssertEqual(result.repetitions, 1, "a condition measured once cannot claim two runs")
     }
 
     // MARK: - Endurance arithmetic
@@ -146,6 +224,32 @@ final class AcceleratorBenchTests: XCTestCase {
         )
     }
 
+    /// The generator must be able to say how much CPU it itself burned, or the
+    /// runner cannot subtract it and every host-cost figure measured under load
+    /// is really a measure of the load.
+    func testLoadGeneratorReportsItsOwnCpuConsumption() {
+        let generator = CpuLoadGenerator()
+        XCTAssertEqual(generator.consumedCpuSeconds, 0, "nothing burned before start")
+
+        generator.start(threadCount: 2)
+        Thread.sleep(forTimeInterval: 1.0)
+        let duringRun = generator.consumedCpuSeconds
+        generator.stop()
+
+        XCTAssertGreaterThan(duringRun, 0.5, "two threads for a second should self-report >0.5s")
+        // Its own tally must not exceed what the whole process burned.
+        XCTAssertLessThanOrEqual(duringRun, HostCostSampler.processCpuSeconds())
+    }
+
+    func testDefaultLoadIsHalfTheCoresNotAllOfThem() {
+        // Pinning every core starves the host leg an accelerator needs for
+        // sampling and dispatch, which measures scheduler starvation instead of
+        // accelerator independence. Measured on an iPhone 15: 5-of-6 cores cost
+        // the ANE path 58%.
+        XCTAssertEqual(CpuLoadGenerator.defaultThreadCount, max(1, HostCostSampler.coreCount / 2))
+        XCTAssertLessThan(CpuLoadGenerator.defaultThreadCount, HostCostSampler.coreCount)
+    }
+
     func testStoppingTheLoadGeneratorLetsCpuTimeSettle() {
         let generator = CpuLoadGenerator()
         generator.start(threadCount: 1)
@@ -191,7 +295,7 @@ final class AcceleratorBenchTests: XCTestCase {
 
     // MARK: - Contender selection
 
-    func testOnlyDownloadedLanguageModelsBecomeContenders() {
+    func testOnlyDownloadedLanguageModelsBecomeContenders() throws {
         let downloadedAne = Self.model(id: "ane", framework: .coreml, localPath: "/tmp/ane")
         let downloadedCpu = Self.model(id: "cpu", framework: .llamaCpp, localPath: "/tmp/cpu")
         let notDownloaded = Self.model(id: "remote", framework: .mlx, localPath: "")
@@ -199,12 +303,18 @@ final class AcceleratorBenchTests: XCTestCase {
             id: "speech", framework: .onnx, localPath: "/tmp/stt", category: .speechRecognition
         )
 
-        let contenders = AcceleratorBenchRunner.availableContenders(
+        let contenders = BenchCatalog.availableContenders(
             from: [downloadedCpu, notDownloaded, wrongCategory, downloadedAne]
         )
 
         XCTAssertEqual(contenders.map(\.modelId), ["ane", "cpu"], "ANE first, and only on-disk LLMs")
-        XCTAssertEqual(contenders.first?.accelerator, .ane)
+        XCTAssertEqual(contenders.first?.requested, .ane)
+
+        // The llama.cpp row is expected to be a GPU row, not a CPU one: it
+        // offloads to Metal on Apple hardware, and LoadOptions.accelerator
+        // cannot force it off (see BenchCatalog.acceleratorPolicyIsUnavailable).
+        let llama = try XCTUnwrap(contenders.first { $0.framework == .llamaCpp })
+        XCTAssertEqual(llama.requested, .gpu)
     }
 
     // MARK: - Result set
@@ -317,9 +427,25 @@ private extension AcceleratorBenchTests {
         return BenchContender(model: model(id: accelerator.rawValue, framework: framework, localPath: "/tmp"))
     }
 
+    static func placement(
+        requested: BenchAccelerator = .ane,
+        actual: BenchAccelerator? = nil
+    ) -> BenchPlacement {
+        let resolved = actual ?? requested
+        return BenchPlacement(
+            requested: requested,
+            actual: resolved,
+            actualBackend: resolved == .ane ? .coreml : .llamaCpp,
+            deviceName: resolved.label,
+            deviceKind: resolved.rawValue,
+            fallbackReason: nil
+        )
+    }
+
     static func pass(tokensPerSecond: Double, ttftMs: Double? = 30) -> BenchPassResult {
         BenchPassResult(
             contender: contender(),
+            placement: placement(),
             prompt: "why does this matter",
             answer: "because it does",
             ttftMs: ttftMs,
@@ -340,13 +466,25 @@ private extension AcceleratorBenchTests {
 
     static func contention(
         quietTokensPerSecond: Double,
-        loadedTokensPerSecond: Double
+        loadedTokensPerSecond: Double,
+        repetitions: Int = 3,
+        jitter: Double = 0
     ) -> BenchContentionResult {
-        BenchContentionResult(
+        // `jitter` scales the spread within each condition so a test can put
+        // the effect above or below the run-to-run noise on purpose.
+        func passes(_ rate: Double) -> [BenchPassResult] {
+            (0..<repetitions).map { index in
+                let offset = repetitions > 1
+                    ? jitter * (Double(index) / Double(repetitions - 1) - 0.5)
+                    : 0
+                return pass(tokensPerSecond: rate * (1 + offset))
+            }
+        }
+        return BenchContentionResult(
             contender: contender(),
-            quiet: pass(tokensPerSecond: quietTokensPerSecond),
-            loaded: pass(tokensPerSecond: loadedTokensPerSecond),
-            loadThreads: 9
+            quietPasses: quietTokensPerSecond > 0 ? passes(quietTokensPerSecond) : [],
+            loadedPasses: loadedTokensPerSecond > 0 ? passes(loadedTokensPerSecond) : [],
+            loadThreads: 3
         )
     }
 
@@ -360,6 +498,7 @@ private extension AcceleratorBenchTests {
     ) -> BenchEnduranceResult {
         BenchEnduranceResult(
             contender: contender(),
+            placement: placement(),
             samples: [],
             totalTokens: totalTokens,
             promptsCompleted: 20,

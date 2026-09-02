@@ -80,13 +80,31 @@ struct BenchContentionPanel: View {
                 )
                 .disabled(viewModel.isRunning)
 
-                Text("This device reports \(HostCostSampler.coreCount) cores. "
-                    + "\(CpuLoadGenerator.defaultThreadCount) threads leaves one for the app "
-                    + "itself, which starves a CPU contender without freezing the UI.")
+                Text("This device reports \(HostCostSampler.coreCount) cores. The default of "
+                    + "\(CpuLoadGenerator.defaultThreadCount) is half of them — \"the app is "
+                    + "busy\", not \"the machine is wedged\". An accelerator still needs the "
+                    + "host to sample and dispatch between calls, so pinning every core measures "
+                    + "scheduler starvation rather than accelerator independence. Raise it for a "
+                    + "deliberate worst case; the result always states the count.")
                     .appType(.caption)
                     .foregroundStyle(AppColors.mutedForeground)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            Picker("Repetitions", selection: $viewModel.contentionRepetitions) {
+                ForEach(viewModel.contentionRepetitionOptions, id: \.self) { count in
+                    Text(count == 1 ? "1 (not advised)" : "\(count)").tag(count)
+                }
+            }
+            .disabled(viewModel.isRunning)
+
+            Text("Each condition is measured this many times, in alternating order, and compared "
+                + "on medians. One pass each is not enough: the quiet pass would run first on a "
+                + "down-clocked chip while the load itself boosts the package, so the handicapped "
+                + "condition gets better hardware. That artifact is big enough to make a CPU "
+                + "contender look faster with cores taken away.")
+                .appType(.caption)
+                .foregroundStyle(AppColors.mutedForeground)
+                .fixedSize(horizontal: false, vertical: true)
         } header: {
             Label("Synthetic load", systemImage: "gauge.with.dots.needle.67percent")
         }
@@ -98,20 +116,34 @@ struct BenchContentionPanel: View {
     private var verdictSection: some View {
         Section {
             ForEach(viewModel.contentionResults.sorted(by: Self.byLeastMovement)) { result in
-                BenchVerdictRow(
-                    claim: "\(result.contender.accelerator.label) under load",
-                    value: BenchFormat.signedPercent(result.latencyDeltaPercent, 1),
-                    detail: detail(for: result),
-                    tint: tint(for: result),
-                    symbol: symbol(for: result)
-                )
+                if result.isPowerStateArtifact {
+                    BenchVerdictRow(
+                        claim: "not a contention measurement",
+                        value: BenchFormat.decimal(result.throughputRetentionPercent, 0) + "%",
+                        detail: artifactDetail(for: result),
+                        tint: AppColors.danger,
+                        symbol: "exclamationmark.octagon.fill"
+                    )
+                } else {
+                    BenchVerdictRow(
+                        claim: "\((result.placement?.actual ?? result.contender.accelerator).label) under load",
+                        value: BenchFormat.signedPercent(result.latencyDeltaPercent, 1),
+                        detail: detail(for: result),
+                        tint: tint(for: result),
+                        symbol: symbol(for: result)
+                    )
+                }
             }
         } header: {
             Label("Per-token latency change", systemImage: "arrow.left.arrow.right")
         } footer: {
             Text("Near zero means the work is on silicon that the competing threads cannot "
                 + "touch. A large positive number means it was queueing behind them for the "
-                + "same cores.")
+                + "same cores. A result over 100% retention is not a contention measurement at "
+                + "all and is reported as such: on a phone an idle device is a low-power state, "
+                + "and the load itself boosts the whole package, so whichever engine is measured "
+                + "first on a quiet device is penalised. This panel is most trustworthy on a Mac "
+                + "with cores to spare.")
         }
     }
 
@@ -122,16 +154,36 @@ struct BenchContentionPanel: View {
         abs(lhs.latencyDeltaPercent ?? .infinity) < abs(rhs.latencyDeltaPercent ?? .infinity)
     }
 
+    /// Explains the impossible number rather than printing it as a win.
+    private func artifactDetail(for result: BenchContentionResult) -> String {
+        "\(result.contender.displayName) came out FASTER with \(result.loadThreads) of "
+            + "\(HostCostSampler.coreCount) cores taken away, which contention cannot do. The two "
+            + "conditions ran at different SoC power states: an idle device sits clocked down, and "
+            + "the load threads drag the package up, raising GPU and memory clocks too. This "
+            + "measures frequency scaling, not contention — discard it."
+    }
+
     private func detail(for result: BenchContentionResult) -> String {
-        let quiet = BenchFormat.decimal(result.quiet.msPerToken, 2)
-        let loaded = BenchFormat.decimal(result.loaded.msPerToken, 2)
+        let quiet = BenchFormat.decimal(result.quietMsPerToken, 2)
+        let loaded = BenchFormat.decimal(result.loadedMsPerToken, 2)
         let retained = BenchFormat.decimal(result.throughputRetentionPercent, 0)
-        return "\(result.contender.displayName) · \(quiet) → \(loaded) ms/token with "
-            + "\(result.loadThreads) threads spinning · \(retained)% of throughput retained"
+        var text = "\(result.contender.displayName) · median \(quiet) → \(loaded) ms/token "
+            + "with \(result.loadThreads) of \(HostCostSampler.coreCount) cores spinning · "
+            + "\(retained)% of throughput retained · \(result.repetitions) runs each"
+        // A delta smaller than the run-to-run spread has not been measured, and
+        // saying so is the difference between a result and a coin flip.
+        if result.deltaExceedsNoise == false {
+            let noise = BenchFormat.decimal(
+                max(result.quietSpreadPercent ?? 0, result.loadedSpreadPercent ?? 0), 0
+            )
+            text += " — WITHIN NOISE (run-to-run spread \(noise)%), treat as no measured change"
+        }
+        return text
     }
 
     private func tint(for result: BenchContentionResult) -> Color {
         guard let delta = result.latencyDeltaPercent else { return AppColors.textTertiary }
+        if result.deltaExceedsNoise == false { return AppColors.textTertiary }
         if abs(delta) < 5 { return AppColors.success }
         if abs(delta) < 25 { return AppColors.warning }
         return AppColors.danger
@@ -139,6 +191,7 @@ struct BenchContentionPanel: View {
 
     private func symbol(for result: BenchContentionResult) -> String {
         guard let delta = result.latencyDeltaPercent else { return "questionmark.circle" }
+        if result.deltaExceedsNoise == false { return "questionmark.circle.fill" }
         if abs(delta) < 5 { return "equal.circle.fill" }
         return delta > 0 ? "arrow.up.right.circle.fill" : "arrow.down.right.circle.fill"
     }
@@ -153,31 +206,40 @@ private struct ContentionResultSection: View {
         Section {
             BenchMetricGrid {
                 BenchMetricTile(
-                    title: "Quiet",
-                    value: BenchFormat.decimal(result.quiet.tokensPerSecond, 1),
+                    title: "Quiet (median)",
+                    value: BenchFormat.decimal(result.quietTokensPerSecond, 1),
                     unit: "tok/s",
-                    footnote: BenchFormat.decimal(result.quiet.msPerToken, 2) + " ms/token",
+                    footnote: BenchFormat.decimal(result.quietMsPerToken, 2) + " ms/token · spread "
+                        + BenchFormat.decimal(result.quietSpreadPercent, 0) + "%",
                     tint: AppColors.foreground
                 )
                 BenchMetricTile(
-                    title: "Under load",
-                    value: BenchFormat.decimal(result.loaded.tokensPerSecond, 1),
+                    title: "Under load (median)",
+                    value: BenchFormat.decimal(result.loadedTokensPerSecond, 1),
                     unit: "tok/s",
-                    footnote: BenchFormat.decimal(result.loaded.msPerToken, 2) + " ms/token",
+                    footnote: BenchFormat.decimal(result.loadedMsPerToken, 2) + " ms/token · spread "
+                        + BenchFormat.decimal(result.loadedSpreadPercent, 0) + "%",
                     tint: AppColors.foreground
                 )
                 BenchMetricTile(
                     title: "Host CPU, quiet",
-                    value: BenchFormat.decimal(result.quiet.hostCoresHeld, 2),
+                    value: BenchFormat.decimal(result.quietHostCoresHeld, 2),
                     unit: "cores",
                     tint: AppColors.foreground
                 )
                 BenchMetricTile(
                     title: "Host CPU, loaded",
-                    value: BenchFormat.decimal(result.loaded.hostCoresHeld, 2),
+                    value: BenchFormat.decimal(result.loadedHostCoresHeld, 2),
                     unit: "cores",
-                    footnote: "the load threads are not in this figure — it is this process only",
+                    footnote: "the load threads' own CPU is subtracted, so this is the "
+                        + "generation's cost, not the synthetic load's",
                     tint: AppColors.foreground
+                )
+                BenchMetricTile(
+                    title: "Runs",
+                    value: "\(result.repetitions)",
+                    unit: "each condition",
+                    footnote: "alternating order, compared on medians"
                 )
             }
             .listRowInsets(EdgeInsets(
@@ -187,20 +249,21 @@ private struct ContentionResultSection: View {
                 trailing: AppSpacing.mediumLarge
             ))
 
-            if result.quiet.samples.count > 2 || result.loaded.samples.count > 2 {
+            if let quiet = result.quiet, let loaded = result.loaded,
+               quiet.samples.count > 2 || loaded.samples.count > 2 {
                 BenchThroughputChart(
                     series: [
                         .init(
                             id: "quiet-\(result.id)",
                             label: "quiet",
-                            tint: result.contender.accelerator.tint,
-                            samples: result.quiet.samples
+                            tint: (result.placement?.actual ?? result.contender.accelerator).tint,
+                            samples: quiet.samples
                         ),
                         .init(
                             id: "loaded-\(result.id)",
                             label: "under load",
                             tint: AppColors.danger,
-                            samples: result.loaded.samples
+                            samples: loaded.samples
                         )
                     ]
                 )
@@ -209,7 +272,11 @@ private struct ContentionResultSection: View {
             HStack {
                 Text(result.contender.displayName)
                 Spacer()
-                BenchAcceleratorBadge(accelerator: result.contender.accelerator)
+                if let placement = result.placement {
+                    BenchPlacementBadge(placement: placement)
+                } else {
+                    BenchAcceleratorBadge(accelerator: result.contender.accelerator)
+                }
             }
         }
     }

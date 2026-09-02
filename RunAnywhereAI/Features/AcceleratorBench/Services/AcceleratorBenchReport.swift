@@ -69,8 +69,11 @@ enum AcceleratorBenchReport {
 
         for pass in passes {
             lines.append("### \(pass.contender.displayName)")
-            lines.append("engine \(pass.contender.accelerator.engineLabel) · "
-                + "runs on \(pass.contender.accelerator.label)")
+            lines.append("ran on \(pass.placement.actual.label)"
+                + (pass.placement.deviceName.isEmpty ? "" : " (\(pass.placement.deviceName))")
+                + " via \(pass.placement.actualBackend.consumerBackendBadgeLabel)"
+                + " · requested \(pass.placement.requested.shortLabel)"
+                + (pass.placement.divergedFromRequest ? "  [REQUEST NOT HONOURED]" : ""))
             lines.append("- \(fmt(pass.tokensPerSecond, 1)) tok/s "
                 + "(median of live windows \(fmt(pass.medianTokensPerSecond, 1)))")
             if let ttft = pass.ttftMs {
@@ -91,27 +94,50 @@ enum AcceleratorBenchReport {
 
     private static func contentionSection(_ results: [BenchContentionResult]) -> [String] {
         guard !results.isEmpty else { return ["No contention run recorded yet."] }
-        var lines = ["## Contention — the same prompt, quiet then under load", ""]
+        var lines = ["## Contention — the same prompt with and without competing CPU load", ""]
 
         for result in results {
             lines.append("### \(result.contender.displayName) "
-                + "(\(result.contender.accelerator.label))")
-            lines.append("- quiet:  \(fmt(result.quiet.tokensPerSecond, 1)) tok/s, "
-                + "\(fmt(result.quiet.msPerToken ?? 0, 2)) ms/token")
+                + "(ran on \((result.placement?.actual ?? result.contender.accelerator).label))")
+            lines.append("- \(result.repetitions) runs per condition, alternating order, "
+                + "medians reported")
+            lines.append("- quiet:  \(fmt(result.quietTokensPerSecond ?? 0, 1)) tok/s, "
+                + "\(fmt(result.quietMsPerToken ?? 0, 2)) ms/token "
+                + "(spread \(fmt(result.quietSpreadPercent ?? 0, 0))%)")
             lines.append("- loaded (\(result.loadThreads) threads spinning): "
-                + "\(fmt(result.loaded.tokensPerSecond, 1)) tok/s, "
-                + "\(fmt(result.loaded.msPerToken ?? 0, 2)) ms/token")
-            if let delta = result.latencyDeltaPercent {
-                lines.append("- **per-token latency change: \(signed(delta, 1)) %**")
+                + "\(fmt(result.loadedTokensPerSecond ?? 0, 1)) tok/s, "
+                + "\(fmt(result.loadedMsPerToken ?? 0, 2)) ms/token "
+                + "(spread \(fmt(result.loadedSpreadPercent ?? 0, 0))%)")
+            if result.isPowerStateArtifact {
+                lines.append("- **DISCARD: measured "
+                    + fmt(result.throughputRetentionPercent ?? 0, 0)
+                    + "% of quiet throughput WITH cores removed.** Contention cannot make work "
+                    + "faster; the two conditions ran at different SoC power states. This is "
+                    + "frequency scaling, not contention.")
+            } else if let delta = result.latencyDeltaPercent {
+                if result.deltaExceedsNoise == false {
+                    lines.append("- median per-token latency change: \(signed(delta, 1)) % — "
+                        + "**WITHIN RUN-TO-RUN NOISE, not a measured change**")
+                } else {
+                    lines.append("- **median per-token latency change: \(signed(delta, 1)) %**")
+                }
             }
             if let retention = result.throughputRetentionPercent {
                 lines.append("- throughput retained: \(fmt(retention, 0)) %")
             }
+            if let cores = result.loadedHostCoresHeld {
+                lines.append("- host CPU under load: \(fmt(cores, 2)) cores "
+                    + "(the load generator's own burn is excluded)")
+            }
             lines.append("")
         }
-        lines.append("A path executing on the Neural Engine is separate silicon and should barely")
-        lines.append("move. A path on the general-purpose cores competes for the cores the load")
-        lines.append("threads are holding.")
+        lines.append("Read the sign, not just the size. A path executing on the Neural Engine is")
+        lines.append("separate silicon and should barely move; a path on the general-purpose cores")
+        lines.append("competes for the cores the load threads hold. But a single pass per condition")
+        lines.append("cannot show that: the quiet pass would run first on a down-clocked chip while")
+        lines.append("the load itself boosts the package, an artifact large enough to make a CPU")
+        lines.append("contender measure FASTER with cores taken away. Hence the repetitions, the")
+        lines.append("alternating order, and the spread printed next to every median.")
         return lines
     }
 
@@ -121,7 +147,7 @@ enum AcceleratorBenchReport {
 
         for result in results {
             lines.append("### \(result.contender.displayName) "
-                + "(\(result.contender.accelerator.label))")
+                + "(ran on \(result.placement.actual.label))")
             lines.append("- ran \(AcceleratorBenchRunner.clock(result.duration)), "
                 + "\(result.promptsCompleted) prompts, \(result.totalTokens) tokens")
             lines.append("- average \(fmt(result.averageTokensPerSecond, 1)) tok/s "

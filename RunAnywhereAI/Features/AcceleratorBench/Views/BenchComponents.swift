@@ -34,6 +34,33 @@ struct BenchAcceleratorBadge: View {
     }
 }
 
+/// Shows measured placement, and says so when it is not what was asked for.
+///
+/// This exists because the alternative — labelling by framework — put "CPU" on
+/// a contender the runtime had placed entirely on the A16 GPU.
+struct BenchPlacementBadge: View {
+    let placement: BenchPlacement
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: AppSpacing.xxSmall) {
+            BenchAcceleratorBadge(accelerator: placement.actual)
+            if placement.divergedFromRequest {
+                Label(
+                    "asked for \(placement.requested.shortLabel), ran on \(placement.actual.shortLabel)",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .appType(.caption)
+                .foregroundStyle(AppColors.warningText)
+            }
+            if !placement.deviceName.isEmpty {
+                Text(placement.deviceName)
+                    .appType(.caption)
+                    .foregroundStyle(AppColors.mutedForeground)
+            }
+        }
+    }
+}
+
 // MARK: - Metric tile
 
 /// One measured value with its unit and, where it matters, the caveat that

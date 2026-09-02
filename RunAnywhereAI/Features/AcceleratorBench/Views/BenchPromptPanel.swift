@@ -47,7 +47,7 @@ struct BenchPromptPanel: View {
         Section {
             ForEach(hostCostRanking) { pass in
                 BenchVerdictRow(
-                    claim: "\(pass.contender.accelerator.label) host cost",
+                    claim: "\(pass.placement.actual.label) host cost",
                     value: pass.hostCpuMsPerToken.map { BenchFormat.decimal($0, 1) + " ms" }
                         ?? "—",
                     detail: "\(pass.contender.displayName) held "
@@ -72,7 +72,7 @@ struct BenchPromptPanel: View {
         Section {
             ForEach(viewModel.passResults.sorted { $0.tokensPerSecond > $1.tokensPerSecond }) { pass in
                 HStack {
-                    BenchAcceleratorBadge(accelerator: pass.contender.accelerator)
+                    BenchPlacementBadge(placement: pass.placement)
                     Text(pass.contender.displayName)
                         .appType(.meta)
                         .lineLimit(1)
@@ -222,7 +222,7 @@ private struct PassResultSection: View {
                     unit: "tok/s",
                     footnote: "median of live windows "
                         + BenchFormat.decimal(pass.medianTokensPerSecond, 1),
-                    tint: pass.contender.accelerator.tint,
+                    tint: pass.placement.actual.tint,
                     isHeadline: true
                 )
 
@@ -283,8 +283,8 @@ private struct PassResultSection: View {
                     series: [
                         .init(
                             id: pass.id.uuidString,
-                            label: pass.contender.accelerator.shortLabel,
-                            tint: pass.contender.accelerator.tint,
+                            label: pass.placement.actual.shortLabel,
+                            tint: pass.placement.actual.tint,
                             samples: pass.samples
                         )
                     ]
@@ -300,7 +300,7 @@ private struct PassResultSection: View {
             HStack {
                 Text(pass.contender.displayName)
                 Spacer()
-                BenchAcceleratorBadge(accelerator: pass.contender.accelerator)
+                BenchPlacementBadge(placement: pass.placement)
             }
         }
     }

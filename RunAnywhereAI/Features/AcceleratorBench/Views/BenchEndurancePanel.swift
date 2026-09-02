@@ -238,8 +238,8 @@ private struct EnduranceResultSection: View {
                     series: [
                         .init(
                             id: result.id.uuidString,
-                            label: result.contender.accelerator.shortLabel,
-                            tint: result.contender.accelerator.tint,
+                            label: result.placement.actual.shortLabel,
+                            tint: result.placement.actual.tint,
                             samples: result.samples
                         )
                     ],
@@ -250,7 +250,7 @@ private struct EnduranceResultSection: View {
             HStack {
                 Text(result.contender.displayName)
                 Spacer()
-                BenchAcceleratorBadge(accelerator: result.contender.accelerator)
+                BenchPlacementBadge(placement: result.placement)
             }
         }
     }

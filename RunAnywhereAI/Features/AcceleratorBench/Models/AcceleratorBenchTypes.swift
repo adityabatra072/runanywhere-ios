@@ -30,7 +30,38 @@ enum BenchAccelerator: String, CaseIterable, Identifiable, Sendable {
 
     var id: String { rawValue }
 
-    init(framework: InferenceFramework) {
+    /// Classify from the placement the SDK actually reports.
+    ///
+    /// ## Why this does not read the framework
+    ///
+    /// It used to, and it was wrong. `.llamaCpp` was mapped to `.cpu`, but on
+    /// Apple hardware llama.cpp offloads to Metal by default: on an iPhone 15
+    /// the log reads `using device MTL0 (Apple A16 GPU)` and
+    /// `offloaded 15/15 layers to GPU`. So a contender the bench labelled "CPU"
+    /// was running entirely on the GPU, and the screen carried a false claim.
+    ///
+    /// It also produced an impossible measurement — that contender came out
+    /// 83% FASTER with three of six cores stolen, because CPU load drags the
+    /// package into a higher power state and the GPU's clocks rise with it.
+    ///
+    /// `LoadedModel.actualDevice.deviceKind` is what the runtime did. Trust it,
+    /// and fall back to the framework only when it says nothing.
+    init(deviceKind: String, framework: InferenceFramework) {
+        switch deviceKind.lowercased() {
+        case let kind where kind.contains("npu") || kind.contains("neural") || kind.contains("ane"):
+            self = .ane
+        case let kind where kind.contains("gpu") || kind.contains("metal"):
+            self = .gpu
+        case let kind where kind.contains("cpu"):
+            self = .cpu
+        default:
+            self = BenchAccelerator(assumingFrom: framework)
+        }
+    }
+
+    /// Best guess before a model has been loaded, for the picker only. Never
+    /// used to label a result — a result carries its measured placement.
+    init(assumingFrom framework: InferenceFramework) {
         switch framework {
         case .coreml:
             // The `.coreml` wire value is NeuRT, which pins compute units to
@@ -38,7 +69,11 @@ enum BenchAccelerator: String, CaseIterable, Identifiable, Sendable {
             self = .ane
         case .mlx:
             self = .gpu
-        case .llamaCpp, .onnx, .executorch, .tflite, .mediapipe, .mlc, .swiftTransformers:
+        case .llamaCpp:
+            // Metal by default on Apple hardware. Requesting `.cpu` at load
+            // time is what actually produces a CPU arm.
+            self = .gpu
+        case .onnx, .executorch, .tflite, .mediapipe, .mlc, .swiftTransformers:
             self = .cpu
         default:
             self = .other
@@ -92,24 +127,72 @@ enum BenchAccelerator: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+// MARK: - Placement
+
+/// Where a contender actually ran, as reported by the load handle.
+///
+/// Kept on every result so a number can never be presented under a backend
+/// label that the runtime did not confirm.
+struct BenchPlacement: Sendable, Hashable {
+    let requested: BenchAccelerator
+    let actual: BenchAccelerator
+    let actualBackend: InferenceFramework
+    let deviceName: String
+    let deviceKind: String
+    let fallbackReason: String?
+
+    /// The runtime did not honour the request. Worth surfacing: requesting CPU
+    /// and silently getting Metal is exactly how a bench ends up publishing a
+    /// GPU number as a CPU one.
+    var divergedFromRequest: Bool { requested != actual }
+
+    static func unknown(_ accelerator: BenchAccelerator) -> BenchPlacement {
+        BenchPlacement(
+            requested: accelerator,
+            actual: accelerator,
+            actualBackend: .unspecified,
+            deviceName: "",
+            deviceKind: "",
+            fallbackReason: nil
+        )
+    }
+}
+
 // MARK: - Contender
 
-/// One model-on-one-accelerator entry in the bench.
+/// One model run under one requested accelerator policy.
+///
+/// The policy is part of the identity, not a setting: the same GGUF is a
+/// different contender on the CPU than on the GPU, and on Apple hardware
+/// llama.cpp will pick Metal unless CPU is asked for explicitly.
 struct BenchContender: Identifiable, Hashable, Sendable {
     let modelId: String
-    let displayName: String
+    let modelName: String
     let framework: InferenceFramework
-    let accelerator: BenchAccelerator
+    /// What this contender asks the runtime for.
+    let requested: BenchAccelerator
     /// Registry size hint, for the picker subtitle only.
     let sizeBytes: Int64
 
-    var id: String { modelId }
+    var id: String { "\(modelId)#\(requested.rawValue)" }
 
-    init(model: RAModelInfo) {
+    /// Expected placement, for grouping in the picker. A measured result uses
+    /// `BenchPlacement.actual` instead.
+    var accelerator: BenchAccelerator { requested }
+
+    /// Names the policy too, so two rows for one model are distinguishable.
+    var displayName: String {
+        needsPolicyInName ? "\(modelName) — \(requested.shortLabel)" : modelName
+    }
+
+    /// Only frameworks that can genuinely go either way get the suffix.
+    private var needsPolicyInName: Bool { framework == .llamaCpp }
+
+    init(model: RAModelInfo, requesting requested: BenchAccelerator? = nil) {
         self.modelId = model.id
-        self.displayName = model.name.isEmpty ? model.id : model.name
+        self.modelName = model.name.isEmpty ? model.id : model.name
         self.framework = model.framework
-        self.accelerator = BenchAccelerator(framework: model.framework)
+        self.requested = requested ?? BenchAccelerator(assumingFrom: model.framework)
         self.sizeBytes = model.downloadSizeBytes
     }
 }
@@ -138,6 +221,8 @@ struct BenchSample: Sendable, Identifiable {
 struct BenchPassResult: Identifiable, Sendable {
     let id = UUID()
     let contender: BenchContender
+    /// Where this actually ran, straight off the load handle.
+    let placement: BenchPlacement
     let prompt: String
     let answer: String
 
@@ -179,30 +264,128 @@ struct BenchPassResult: Identifiable, Sendable {
 
 // MARK: - Contention
 
-/// The same contender measured on a quiet machine and then under load.
+/// The same contender measured with and without competing CPU load.
 ///
-/// This is the bench's headline: a path really executing on the Neural Engine
-/// is a separate block of silicon and barely notices competing CPU work, while
-/// a path on the general-purpose cores contends for them directly.
+/// ## Why this holds arrays instead of two passes
+///
+/// The first version timed one quiet pass then one loaded pass, and produced a
+/// result that was physically impossible: on an iPhone 15 a llama.cpp contender
+/// came out **81% faster** with three of six cores stolen from it
+/// (116.34 -> 210.29 tok/s, "180.8% retained").
+///
+/// The cause is pass order interacting with frequency scaling. A quiet pass
+/// running first sits on a cool, idle SoC where iOS clocks the cores down and
+/// will park a lone inference thread on an efficiency core. Starting the load
+/// threads then drags the package into a boosted power state and pushes work
+/// onto performance cores — so the handicapped condition hands the CPU path
+/// better clocks and better cores, and that gain is larger than the contention
+/// being measured.
+///
+/// So conditions are now visited repeatedly with **alternating order** and
+/// compared on medians. Monotonic drift — thermal ramp, DVFS settling — biases
+/// both conditions about equally and largely cancels, which one pass each
+/// cannot do at any level of care.
 struct BenchContentionResult: Identifiable, Sendable {
     let id = UUID()
     let contender: BenchContender
-    let quiet: BenchPassResult
-    let loaded: BenchPassResult
-    /// How many synthetic load threads ran during `loaded`.
+    let quietPasses: [BenchPassResult]
+    let loadedPasses: [BenchPassResult]
+    /// How many synthetic load threads ran during the loaded passes.
     let loadThreads: Int
 
-    /// Signed change in per-token latency, in percent. Near zero is the win.
+    var repetitions: Int { min(quietPasses.count, loadedPasses.count) }
+
+    /// Measured placement, taken from the passes rather than the request.
+    var placement: BenchPlacement? {
+        (quietPasses.first ?? loadedPasses.first)?.placement
+    }
+
+    /// A representative pass per condition, for the answer text and host cost.
+    var quiet: BenchPassResult? { Self.representative(of: quietPasses) }
+    var loaded: BenchPassResult? { Self.representative(of: loadedPasses) }
+
+    var quietMsPerToken: Double? { BenchStats.median(quietPasses.compactMap(\.msPerToken)) }
+    var loadedMsPerToken: Double? { BenchStats.median(loadedPasses.compactMap(\.msPerToken)) }
+
+    var quietTokensPerSecond: Double? {
+        BenchStats.median(quietPasses.map(\.tokensPerSecond))
+    }
+    var loadedTokensPerSecond: Double? {
+        BenchStats.median(loadedPasses.map(\.tokensPerSecond))
+    }
+
+    /// Median host CPU held during the loaded passes, with the load
+    /// generator's own burn already excluded by the runner.
+    var loadedHostCoresHeld: Double? { BenchStats.median(loadedPasses.map(\.hostCoresHeld)) }
+    var quietHostCoresHeld: Double? { BenchStats.median(quietPasses.map(\.hostCoresHeld)) }
+
+    /// Signed change in median per-token latency, in percent. Near zero is the
+    /// claim; a large positive number means the work was queueing for cores.
     var latencyDeltaPercent: Double? {
-        guard let quietMs = quiet.msPerToken,
-              let loadedMs = loaded.msPerToken,
+        guard let quietMs = quietMsPerToken,
+              let loadedMs = loadedMsPerToken,
               quietMs > 0 else { return nil }
         return (loadedMs - quietMs) / quietMs * 100
     }
 
     var throughputRetentionPercent: Double? {
-        guard quiet.tokensPerSecond > 0 else { return nil }
-        return loaded.tokensPerSecond / quiet.tokensPerSecond * 100
+        guard let quietRate = quietTokensPerSecond,
+              let loadedRate = loadedTokensPerSecond,
+              quietRate > 0 else { return nil }
+        return loadedRate / quietRate * 100
+    }
+
+    /// Spread of the repetitions within one condition, as a percentage of its
+    /// median. This is the honesty check on the delta: if run-to-run noise is
+    /// the same size as the effect, the effect has not been measured.
+    var quietSpreadPercent: Double? { Self.spread(of: quietPasses) }
+    var loadedSpreadPercent: Double? { Self.spread(of: loadedPasses) }
+
+    /// The two conditions did not run at a comparable SoC power state, so the
+    /// comparison is not a contention measurement at all.
+    ///
+    /// Contention cannot make work faster. Retention meaningfully above 100%
+    /// means something else dominated — and on a phone that something is
+    /// frequency scaling: an idle device sits in a low-power state, and the
+    /// load threads themselves drag the package up, raising GPU and memory
+    /// clocks along with CPU. Measured on an iPhone 15 with 3 of 6 cores
+    /// spinning, llama.cpp on Metal retained **183.5%** and then **294.6%**
+    /// across separate runs, reproducibly, with alternating pass order.
+    ///
+    /// When this is true the panel reports the artifact instead of a verdict.
+    /// A benchmark that prints a flattering impossible number is worse than
+    /// one that admits it measured the wrong thing.
+    var isPowerStateArtifact: Bool {
+        guard let retention = throughputRetentionPercent else { return false }
+        return retention > 110
+    }
+
+    /// Whether this result supports any statement about contention.
+    var isTrustworthy: Bool {
+        !isPowerStateArtifact && repetitions > 1 && (deltaExceedsNoise ?? false)
+    }
+
+    /// True when the measured delta is larger than the noise it sits in.
+    ///
+    /// Without this a viewer cannot tell a real 3% from a 3% that would have
+    /// come out either way, and the panel would present both identically.
+    var deltaExceedsNoise: Bool? {
+        guard let delta = latencyDeltaPercent else { return nil }
+        let noise = max(quietSpreadPercent ?? 0, loadedSpreadPercent ?? 0)
+        return abs(delta) > noise
+    }
+
+    private static func representative(of passes: [BenchPassResult]) -> BenchPassResult? {
+        guard !passes.isEmpty else { return nil }
+        let sorted = passes.sorted { ($0.msPerToken ?? .infinity) < ($1.msPerToken ?? .infinity) }
+        return sorted[sorted.count / 2]
+    }
+
+    private static func spread(of passes: [BenchPassResult]) -> Double? {
+        let values = passes.compactMap(\.msPerToken).filter { $0 > 0 }
+        guard values.count > 1, let median = BenchStats.median(values), median > 0 else { return nil }
+        guard let low = values.min(), let high = values.max() else { return nil }
+        return (high - low) / median * 100
     }
 }
 
@@ -217,6 +400,8 @@ struct BenchContentionResult: Identifiable, Sendable {
 struct BenchEnduranceResult: Identifiable, Sendable {
     let id = UUID()
     let contender: BenchContender
+    /// Where this actually ran, straight off the load handle.
+    let placement: BenchPlacement
     let samples: [BenchSample]
     let totalTokens: Int
     let promptsCompleted: Int

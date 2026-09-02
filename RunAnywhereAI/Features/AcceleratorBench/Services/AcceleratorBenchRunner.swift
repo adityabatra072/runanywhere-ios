@@ -88,11 +88,18 @@ struct BenchProgress: Sendable {
 final class AcceleratorBenchRunner {
     private let logger = Logger(subsystem: "com.runanywhere.RunAnywhereAI", category: "AcceleratorBench")
 
-    /// Models this app session has already brought up once. A second load hits
-    /// NeuRT's content-addressed `.mlmodelc` cache, which is a different — and
-    /// much better — number than the first, so the two are labelled apart
-    /// rather than averaged into a meaningless middle.
-    private var everLoaded: Set<String> = []
+    /// Models brought up at least once in this PROCESS.
+    ///
+    /// Static, not per-instance: two screens each holding their own runner
+    /// would otherwise both call their first load "first", when the second one
+    /// hits a cache the first one populated.
+    ///
+    /// And the label says "first this session", not "cold", deliberately.
+    /// NeuRT's content-addressed `.mlmodelc` cache lives on disk and survives
+    /// app launches, so the first load of a second launch is already warm. From
+    /// inside the process there is no way to tell which, and claiming "cold"
+    /// would be asserting something unmeasured.
+    private static var loadedThisSession: Set<String> = []
 
     private let loadGenerator = CpuLoadGenerator()
 
@@ -101,31 +108,6 @@ final class AcceleratorBenchRunner {
     var onPartialAnswer: (@MainActor (String) -> Void)?
     var onSample: (@MainActor (BenchSample) -> Void)?
     var onProgress: (@MainActor (BenchProgress) -> Void)?
-
-    // MARK: Catalog
-
-    /// Every downloaded language model, as contenders.
-    ///
-    /// Built-ins are excluded: Apple's Foundation Models path is not a
-    /// RunAnywhere engine and its numbers would not be ours to publish.
-    nonisolated static func availableContenders(from models: [RAModelInfo]) -> [BenchContender] {
-        models
-            .filter { model in
-                guard model.category == .language, !model.isBuiltIn else { return false }
-                if model.isDownloadedOnDisk { return true }
-                // The registry marks a model downloaded before the artifact
-                // probe catches up, so a non-empty local path counts too.
-                return !model.localPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            }
-            .map(BenchContender.init(model:))
-            .sorted { lhs, rhs in
-                if lhs.accelerator == rhs.accelerator {
-                    return lhs.displayName < rhs.displayName
-                }
-                // ANE first — it is the subject of the bench.
-                return lhs.accelerator.sortRank < rhs.accelerator.sortRank
-            }
-    }
 
     // MARK: Mode 1 — one prompt, one or more contenders
 
@@ -169,72 +151,114 @@ final class AcceleratorBenchRunner {
     // MARK: Mode 2 — contention
 
     // swiftlint:disable function_body_length
-    /// Quiet pass, then the identical pass with `loadThreads` cores stolen.
+    /// Measure each contender with and without competing load, repeatedly, in
+    /// alternating order.
     ///
-    /// The order is fixed rather than randomised on purpose: the quiet pass
-    /// must run on a machine this bench has not already heated up.
+    /// One quiet pass followed by one loaded pass cannot measure contention on
+    /// a phone. Frequency scaling confounds it: the quiet pass runs first on a
+    /// cool idle SoC with the cores clocked down, and starting the load threads
+    /// boosts the package and migrates work to performance cores — so the
+    /// supposedly handicapped condition runs on better hardware. Measured on an
+    /// iPhone 15, that artifact made a llama.cpp contender come out 81% FASTER
+    /// with three of six cores stolen, which is impossible.
+    ///
+    /// Two things fix it. A warm-up that visits BOTH power states before
+    /// anything is timed, so the first timed pass is not the one paying for
+    /// DVFS settling. And repetitions in alternating order, compared on
+    /// medians, so any monotonic drift biases both conditions about equally
+    /// instead of landing entirely on whichever ran first.
     func runContention(
         contenders: [BenchContender],
         prompt: String,
         maxTokens: Int,
         systemPrompt: String?,
-        loadThreads: Int
+        loadThreads: Int,
+        repetitions: Int = 3
     ) async throws -> [BenchContentionResult] {
         guard !contenders.isEmpty else { throw AcceleratorBenchError.noContenders }
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw AcceleratorBenchError.emptyPrompt }
 
+        let reps = max(1, repetitions)
         var results: [BenchContentionResult] = []
-        let steps = Double(contenders.count * 2)
-        var step = 0.0
-        // Both halves get the identical spec — same prompt, same seed, same
-        // token budget. Only the machine's load differs between them.
+        // Both conditions get the identical spec — same prompt, same seed, same
+        // token budget. Only the machine's load differs.
         let spec = BenchPassSpec(
             prompt: trimmed,
             maxTokens: maxTokens,
             systemPrompt: systemPrompt,
             streamsAnswer: false
         )
+        let totalSteps = Double(contenders.count * reps * 2)
+        var step = 0.0
 
         for contender in contenders {
             let load = try await bringUp(contender)
 
+            // Warm-up visits both power states and is entirely discarded.
             report(
-                phase: "Quiet pass",
+                phase: "Settling",
                 contender: contender.displayName,
-                detail: "no competing load",
-                fraction: step / steps
+                detail: "warming both power states before timing",
+                fraction: step / totalSteps
             )
             try await warmUp()
-            let quiet = try await measure(contender: contender, spec: spec, load: load)
-            step += 1
-
-            report(
-                phase: "Loaded pass",
-                contender: contender.displayName,
-                detail: "\(loadThreads) threads spinning",
-                fraction: step / steps
-            )
             loadGenerator.start(threadCount: loadThreads)
-            // Let the scheduler actually place the load before timing starts,
-            // otherwise the first tokens are measured on a still-quiet machine.
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            let loaded: BenchPassResult
-            do {
-                loaded = try await measure(contender: contender, spec: spec, load: load)
-            } catch {
-                loadGenerator.stop()
-                await tearDown()
-                throw error
-            }
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            try await warmUp()
             loadGenerator.stop()
-            step += 1
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+
+            var quietPasses: [BenchPassResult] = []
+            var loadedPasses: [BenchPassResult] = []
+
+            for rep in 0..<reps {
+                // Alternate which condition goes first, so a monotonic ramp
+                // cannot accumulate entirely on one of them.
+                let quietFirst = rep.isMultiple(of: 2)
+                for isQuietTurn in (quietFirst ? [true, false] : [false, true]) {
+                    try Task.checkCancellation()
+                    report(
+                        phase: isQuietTurn ? "Quiet pass" : "Loaded pass",
+                        contender: contender.displayName,
+                        detail: isQuietTurn
+                            ? "no competing load · run \(rep + 1) of \(reps)"
+                            : "\(loadThreads) threads spinning · run \(rep + 1) of \(reps)",
+                        fraction: step / totalSteps
+                    )
+
+                    if !isQuietTurn {
+                        loadGenerator.start(threadCount: loadThreads)
+                        // Let the scheduler actually place the load before
+                        // timing starts, or the first tokens are measured on a
+                        // still-quiet machine.
+                        try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    }
+
+                    do {
+                        let pass = try await measure(contender: contender, spec: spec, load: load)
+                        if isQuietTurn { quietPasses.append(pass) } else { loadedPasses.append(pass) }
+                    } catch {
+                        loadGenerator.stop()
+                        await tearDown()
+                        throw error
+                    }
+
+                    if !isQuietTurn {
+                        loadGenerator.stop()
+                        // Let clocks come back down before the next quiet pass,
+                        // otherwise the boost leaks across the boundary.
+                        try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    }
+                    step += 1
+                }
+            }
 
             results.append(
                 BenchContentionResult(
                     contender: contender,
-                    quiet: quiet,
-                    loaded: loaded,
+                    quietPasses: quietPasses,
+                    loadedPasses: loadedPasses,
                     loadThreads: loadThreads
                 )
             )
@@ -270,7 +294,7 @@ final class AcceleratorBenchRunner {
         )
 
         for contender in contenders {
-            _ = try await bringUp(contender)
+            let load = try await bringUp(contender)
             try await warmUp()
 
             let collector = BenchSampleCollector()
@@ -311,6 +335,7 @@ final class AcceleratorBenchRunner {
             results.append(
                 BenchEnduranceResult(
                     contender: contender,
+                    placement: load.placement,
                     samples: samples,
                     totalTokens: totalTokens,
                     promptsCompleted: promptsDone,
@@ -347,6 +372,7 @@ final class AcceleratorBenchRunner {
     private struct LoadOutcome {
         let ms: Double
         let wasWarm: Bool
+        let placement: BenchPlacement
     }
 
     private func bringUp(_ contender: BenchContender) async throws -> LoadOutcome {
@@ -354,22 +380,44 @@ final class AcceleratorBenchRunner {
         // and two resident models would contend for memory bandwidth.
         try? await RunAnywhere.models.unload(category: .language)
 
-        let wasWarm = everLoaded.contains(contender.modelId)
+        let wasWarm = Self.loadedThisSession.contains(contender.modelId)
         report(
-            phase: wasWarm ? "Loading (warm)" : "Loading (cold)",
+            phase: wasWarm ? "Loading (repeat)" : "Loading (first this session)",
             contender: contender.displayName,
-            detail: wasWarm ? "from the compiled-graph cache" : "first load compiles and specializes",
+            detail: wasWarm
+                ? "the compiled graph is already cached"
+                : "may compile and specialize the graph, if the on-disk cache is empty",
             fraction: nil
         )
 
         let start = Date()
+        let loaded: LoadedModel
         do {
-            _ = try await RunAnywhere.models.load(id: contender.modelId)
+            // No `accelerator:` here on purpose — see
+            // BenchCatalog.acceleratorPolicyIsUnavailable. Passing it throws
+            // `invalidConfiguration` on SDK 0.20.35, so placement is whatever
+            // the engine chooses and the result is labelled from what it
+            // reports rather than from what we would have liked.
+            loaded = try await RunAnywhere.models.load(
+                id: contender.modelId,
+                options: LoadOptions(forceReload: true)
+            )
         } catch {
             throw AcceleratorBenchError.loadFailed(model: contender.displayName, underlying: error)
         }
         let ms = Date().timeIntervalSince(start) * 1000
-        everLoaded.insert(contender.modelId)
+        let placement = BenchPlacement(
+            requested: contender.requested,
+            actual: BenchAccelerator(
+                deviceKind: loaded.actualDevice.deviceKind,
+                framework: loaded.actualBackend
+            ),
+            actualBackend: loaded.actualBackend,
+            deviceName: loaded.actualDevice.deviceName,
+            deviceKind: loaded.actualDevice.deviceKind,
+            fallbackReason: loaded.fallbackReason
+        )
+        Self.loadedThisSession.insert(contender.modelId)
         let msText = String(format: "%.0f", ms)
         logger.info(
             """
@@ -377,7 +425,7 @@ final class AcceleratorBenchRunner {
             in \(msText, privacy: .public)ms warm=\(wasWarm, privacy: .public)
             """
         )
-        return LoadOutcome(ms: ms, wasWarm: wasWarm)
+        return LoadOutcome(ms: ms, wasWarm: wasWarm, placement: placement)
     }
 
     private func tearDown() async {
@@ -404,6 +452,12 @@ final class AcceleratorBenchRunner {
         load: LoadOutcome
     ) async throws -> BenchPassResult {
         let collector = BenchSampleCollector()
+        // The load generator, when running, burns CPU inside THIS process, and
+        // getrusage(RUSAGE_SELF) counts every thread. Capture its own tally so
+        // the generation is not charged for it: on a 6-core phone an unadjusted
+        // reading showed an ANE inference "holding 4.36 cores" while the
+        // accelerator was doing the arithmetic.
+        let loadCpuAtStart = loadGenerator.consumedCpuSeconds
         let wallStart = Date()
 
         let produced = try await streamCountingTokens(
@@ -416,7 +470,8 @@ final class AcceleratorBenchRunner {
         }
 
         let wallMs = Date().timeIntervalSince(wallStart) * 1000
-        let cpuSeconds = collector.totalCpuSeconds
+        let loadCpuBurned = max(0, loadGenerator.consumedCpuSeconds - loadCpuAtStart)
+        let cpuSeconds = max(0, collector.totalCpuSeconds - loadCpuBurned)
         collector.finalize(tokens: produced.deltaCount)
 
         // Prefer the engine's own rate. Fall back to wall-clock only when the
@@ -430,6 +485,7 @@ final class AcceleratorBenchRunner {
 
         return BenchPassResult(
             contender: contender,
+            placement: load.placement,
             prompt: spec.prompt,
             answer: produced.text,
             ttftMs: ttft,

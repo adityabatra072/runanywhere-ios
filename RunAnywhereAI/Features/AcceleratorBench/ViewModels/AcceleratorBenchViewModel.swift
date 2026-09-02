@@ -55,6 +55,16 @@ final class AcceleratorBenchViewModel {
     var loadThreads: Int = CpuLoadGenerator.defaultThreadCount
     var contentionMaxTokens: Int = 128
 
+    /// How many times each condition is measured.
+    ///
+    /// Not a nicety. One pass each cannot measure contention on a phone: the
+    /// quiet pass runs first on a down-clocked SoC and the load itself boosts
+    /// the package, so the handicapped condition gets better hardware. Three
+    /// alternating repetitions compared on medians is the floor for a number
+    /// worth showing.
+    var contentionRepetitions: Int = 3
+    let contentionRepetitionOptions = [1, 3, 5]
+
     var loadThreadRange: ClosedRange<Double> {
         1...Double(CpuLoadGenerator.maximumThreadCount)
     }
@@ -152,7 +162,7 @@ final class AcceleratorBenchViewModel {
             available = []
             return
         }
-        available = AcceleratorBenchRunner.availableContenders(from: models)
+        available = BenchCatalog.availableContenders(from: models)
 
         let ids = Set(available.map(\.modelId))
         selectedIds = selectedIds.intersection(ids)
@@ -255,7 +265,8 @@ final class AcceleratorBenchViewModel {
                         prompt: self.prompt,
                         maxTokens: self.contentionMaxTokens,
                         systemPrompt: system,
-                        loadThreads: self.loadThreads
+                        loadThreads: self.loadThreads,
+                        repetitions: self.contentionRepetitions
                     )
                 case .endurance:
                     self.enduranceResults = try await self.runner.runEndurance(

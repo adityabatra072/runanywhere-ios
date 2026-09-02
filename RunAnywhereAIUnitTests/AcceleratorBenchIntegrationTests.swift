@@ -138,9 +138,9 @@ final class AcceleratorBenchIntegrationTests: XCTestCase {
         XCTAssertGreaterThan(pass.hostCpuSeconds, 0, "no host CPU recorded; the sampler is not working")
     }
 
-    // MARK: - 3. Warm loads beat cold ones
+    // MARK: - 3. Repeat loads are labelled as such
 
-    func test3_SecondLoadIsWarmAndFaster() async throws {
+    func test3_RepeatLoadIsLabelledAndMeasured() async throws {
         try await ensureDownloaded(aneModelId)
         let contender = try await contender(id: aneModelId)
         let runner = AcceleratorBenchRunner()
@@ -155,11 +155,19 @@ final class AcceleratorBenchIntegrationTests: XCTestCase {
         )
         let second = try XCTUnwrap(secondRun.first)
 
-        log("load: first \(f(first.loadMs, 0)) ms (\(first.wasWarmLoad ? "warm" : "cold")) → "
-            + "second \(f(second.loadMs, 0)) ms (\(second.wasWarmLoad ? "warm" : "cold"))")
+        log("load: first \(f(first.loadMs, 0)) ms (\(first.wasWarmLoad ? "repeat" : "first")) → "
+            + "second \(f(second.loadMs, 0)) ms (\(second.wasWarmLoad ? "repeat" : "first"))")
 
-        XCTAssertFalse(first.wasWarmLoad, "the first load of a session must be labelled cold")
-        XCTAssertTrue(second.wasWarmLoad, "the second load must be labelled warm")
+        // The label is process-wide, so by the time this test runs test2 has
+        // already loaded this model and BOTH loads are repeats. That is the
+        // correct answer — asserting "first is cold" here would be asserting a
+        // per-instance counter that no longer exists.
+        XCTAssertTrue(
+            second.wasWarmLoad,
+            "a load following an earlier load of the same model must be labelled a repeat"
+        )
+        XCTAssertGreaterThan(first.loadMs, 0)
+        XCTAssertGreaterThan(second.loadMs, 0)
     }
 
     // MARK: - 4. Contention — the claim the bench exists for
@@ -169,6 +177,9 @@ final class AcceleratorBenchIntegrationTests: XCTestCase {
         var contenders = [try await contender(id: aneModelId)]
         if let cpuModelId {
             try await ensureDownloaded(cpuModelId)
+            // On Apple hardware this is a GPU (Metal) contender, whatever the
+            // env var is called: llama.cpp offloads every layer, and
+            // LoadOptions.accelerator cannot override it on SDK 0.20.35.
             contenders.append(try await contender(id: cpuModelId))
         }
 
@@ -179,35 +190,53 @@ final class AcceleratorBenchIntegrationTests: XCTestCase {
             prompt: "List three reasons to run inference locally.",
             maxTokens: 96,
             systemPrompt: nil,
-            loadThreads: threads
+            loadThreads: threads,
+            repetitions: 3
         )
 
         for result in results {
+            let noiseNote = result.deltaExceedsNoise == false
+                ? "  <-- WITHIN NOISE, not a measured change"
+                : ""
             log("""
             contention — \(result.contender.displayName) [\(result.contender.accelerator.shortLabel)]
-              quiet    \(f(result.quiet.tokensPerSecond, 2)) tok/s  \
-            (\(f(result.quiet.msPerToken ?? 0, 3)) ms/token, \(f(result.quiet.hostCoresHeld, 2)) cores)
-              loaded   \(f(result.loaded.tokensPerSecond, 2)) tok/s  \
-            (\(f(result.loaded.msPerToken ?? 0, 3)) ms/token, \(f(result.loaded.hostCoresHeld, 2)) cores)
-              with \(threads) competing threads on \(HostCostSampler.coreCount) cores
-              latency delta   \(result.latencyDeltaPercent.map { f($0, 2) + "%" } ?? "—")
+              \(result.repetitions) runs per condition, alternating order, medians
+              quiet    \(f(result.quietTokensPerSecond ?? 0, 2)) tok/s  \
+            (\(f(result.quietMsPerToken ?? 0, 3)) ms/token, spread \(f(result.quietSpreadPercent ?? 0, 1))%)
+              loaded   \(f(result.loadedTokensPerSecond ?? 0, 2)) tok/s  \
+            (\(f(result.loadedMsPerToken ?? 0, 3)) ms/token, spread \(f(result.loadedSpreadPercent ?? 0, 1))%)
+              \(threads) competing threads on \(HostCostSampler.coreCount) cores
+              host CPU loaded \(f(result.loadedHostCoresHeld ?? 0, 3)) cores (load generator excluded)
+              latency delta   \(result.latencyDeltaPercent.map { f($0, 2) + "%" } ?? "—")\(noiseNote)
               retained        \(result.throughputRetentionPercent.map { f($0, 1) + "%" } ?? "—")
+              artifact?       \(result.isPowerStateArtifact ? "YES — discard, this is frequency scaling" : "no")
+              trustworthy?    \(result.isTrustworthy)
             """)
 
-            XCTAssertGreaterThan(result.quiet.outputTokens, 0)
-            XCTAssertGreaterThan(result.loaded.outputTokens, 0)
+            XCTAssertEqual(result.repetitions, 3, "every condition must be measured three times")
             XCTAssertNotNil(
                 result.latencyDeltaPercent,
-                "both passes produced tokens, so a delta must be computable"
+                "both conditions produced tokens, so a delta must be computable"
             )
-        }
 
-        // The load generator must actually have cost something. If the loaded
-        // pass held no more host CPU than the quiet one on the CPU contender,
-        // the contention leg proved nothing.
-        if let cpuResult = results.first(where: { $0.contender.accelerator == .cpu }),
-           let delta = cpuResult.latencyDeltaPercent {
-            log("CPU contender moved \(f(delta, 2))% under load")
+            // Contention cannot make work faster, so a retention over 100% is
+            // an artifact. On a phone that is the EXPECTED outcome and not a
+            // bug in the bench: an idle device sits in a low-power state and
+            // the load threads boost the whole package, GPU clocks included.
+            // Measured on an iPhone 15, llama.cpp on Metal retained 183.5% and
+            // 294.6% across runs, reproducibly, with alternating pass order.
+            //
+            // So the requirement is not "no artifact" — it is that the result
+            // KNOWS when it is an artifact, and refuses to present it as a
+            // contention verdict.
+            if let retention = result.throughputRetentionPercent, retention > 110 {
+                XCTAssertTrue(
+                    result.isPowerStateArtifact,
+                    "\(f(retention, 1))% retention must be flagged as a power-state artifact, "
+                    + "or the panel will publish an impossible number as a win"
+                )
+                XCTAssertFalse(result.isTrustworthy, "an artifact cannot be a trustworthy result")
+            }
         }
     }
 
@@ -282,13 +311,23 @@ final class AcceleratorBenchIntegrationTests: XCTestCase {
     private func currentContenders() async throws -> [BenchContender] {
         await RunAnywhere.models.refresh()
         let models = try await RunAnywhere.models.list()
-        return AcceleratorBenchRunner.availableContenders(from: models)
+        return BenchCatalog.availableContenders(from: models)
     }
 
-    private func contender(id: String) async throws -> BenchContender {
+    /// One model now yields several contenders — a llama.cpp GGUF appears as
+    /// both a GPU arm and a CPU arm — so the accelerator has to be named.
+    private func contender(
+        id: String,
+        requesting requested: BenchAccelerator? = nil
+    ) async throws -> BenchContender {
         let all = try await currentContenders()
-        let found = all.first { $0.modelId == id }
-        return try XCTUnwrap(found, "\(id) is not an available contender")
+        let matches = all.filter { $0.modelId == id }
+        let found = requested.map { policy in matches.first { $0.requested == policy } }
+            ?? matches.first
+        return try XCTUnwrap(
+            found,
+            "\(id)\(requested.map { " on \($0.shortLabel)" } ?? "") is not an available contender"
+        )
     }
 
     /// Download `id` unless it is already on disk. Streams progress to the log

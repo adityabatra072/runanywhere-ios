@@ -22,13 +22,31 @@ final class CpuLoadGenerator: @unchecked Sendable {
     private let lock = NSLock()
     private var isRunning = false
     private var threads: [Thread] = []
+    /// CPU seconds each spinner has burned, published as it goes.
+    ///
+    /// This exists because `getrusage(RUSAGE_SELF)` is process-wide: it counts
+    /// these threads too. Reporting it unadjusted would charge the load
+    /// generator's own burn to the generation being measured, which showed up
+    /// on a 6-core phone as an inference holding "4.36 cores" while the
+    /// accelerator did the arithmetic. The runner subtracts this.
+    private var threadCpuSeconds: [Double] = []
 
-    /// Sensible default: leave one core for the app's own main thread and the
-    /// SDK's orchestration, so the CPU contender is starved rather than the
-    /// UI frozen. On the ANE path this still leaves the ANE completely free,
-    /// which is exactly the asymmetry being measured.
+    /// Half the cores: "the app is busy", not "the machine is wedged".
+    ///
+    /// `cores - 1` was the first default and it is the wrong question on a
+    /// phone. An accelerator still needs the host to sample, detokenize and
+    /// dispatch between calls, so pinning 5 of 6 cores starves that leg and
+    /// measures scheduler starvation rather than accelerator independence —
+    /// on an iPhone 15 it cost the ANE path 58%, against −0.015% for the same
+    /// experiment on a 10+ core Mac.
+    ///
+    /// Half the cores leaves the host leg able to run while still putting real
+    /// pressure on anything doing its arithmetic on the CPU, which is the
+    /// comparison this panel exists to make. The slider goes to 2x cores for a
+    /// deliberate worst case, and every result states the thread count it was
+    /// measured at.
     static var defaultThreadCount: Int {
-        max(1, HostCostSampler.coreCount - 1)
+        max(1, HostCostSampler.coreCount / 2)
     }
 
     static var maximumThreadCount: Int {
@@ -51,10 +69,20 @@ final class CpuLoadGenerator: @unchecked Sendable {
         isRunning = true
         lock.unlock()
 
+        let threadCount = max(1, count)
+        lock.lock()
+        threadCpuSeconds = Array(repeating: 0, count: threadCount)
+        lock.unlock()
+
         var started: [Thread] = []
-        for index in 0..<max(1, count) {
+        for index in 0..<threadCount {
             let thread = Thread { [weak self] in
-                Self.spin { self?.running ?? false }
+                Self.spin(
+                    while: { self?.running ?? false },
+                    publishCpu: { [weak self] seconds in
+                        self?.publish(cpuSeconds: seconds, forThread: index)
+                    }
+                )
             }
             thread.name = "AcceleratorBench.load.\(index)"
             // .userInitiated rather than .userInteractive: high enough to hold
@@ -77,12 +105,62 @@ final class CpuLoadGenerator: @unchecked Sendable {
         lock.unlock()
     }
 
+    /// Total CPU seconds the load threads have burned since `start`.
+    ///
+    /// Read this while the load is still running, or immediately after
+    /// `stop()`; the counters are not cleared until the next `start`.
+    var consumedCpuSeconds: Double {
+        lock.lock()
+        defer { lock.unlock() }
+        return threadCpuSeconds.reduce(0, +)
+    }
+
+    private func publish(cpuSeconds: Double, forThread index: Int) {
+        lock.lock()
+        if threadCpuSeconds.indices.contains(index) {
+            threadCpuSeconds[index] = cpuSeconds
+        }
+        lock.unlock()
+    }
+
+    /// This thread's own consumed CPU time.
+    ///
+    /// Per-thread accounting is the only way to attribute CPU inside a process
+    /// that is deliberately burning it in two places at once. POSIX's
+    /// `pthread_getcpuclockid` does not exist on Darwin, so this goes through
+    /// Mach's `thread_info`, which reports user and system time for one thread.
+    private static func currentThreadCpuSeconds() -> Double {
+        var info = thread_basic_info()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<thread_basic_info_data_t>.size / MemoryLayout<natural_t>.size
+        )
+        let thread = mach_thread_self()
+        // mach_thread_self() returns a send right that leaks without this.
+        defer { mach_port_deallocate(mach_task_self_, thread) }
+
+        let result = withUnsafeMutablePointer(to: &info) { pointer -> kern_return_t in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { raw in
+                thread_info(thread, thread_flavor_t(THREAD_BASIC_INFO), raw, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return 0 }
+
+        let user = Double(info.user_time.seconds)
+            + Double(info.user_time.microseconds) / 1_000_000
+        let system = Double(info.system_time.seconds)
+            + Double(info.system_time.microseconds) / 1_000_000
+        return user + system
+    }
+
     /// Integer-and-float busy work the optimiser cannot fold away.
     ///
     /// `accumulator` is read through `blackHole` so the loop has an observable
     /// effect; without that, `-O` deletes the body and the "load" threads sleep
     /// at 0% while the panel reports a contention result of zero.
-    private static func spin(_ shouldContinue: @escaping () -> Bool) {
+    private static func spin(
+        while shouldContinue: @escaping () -> Bool,
+        publishCpu: @escaping (Double) -> Void
+    ) {
         var accumulator = 1.000001
         var counter: UInt64 = 0
         while shouldContinue() {
@@ -94,7 +172,9 @@ final class CpuLoadGenerator: @unchecked Sendable {
                 accumulator = (accumulator * 1.0000001 + Double(counter & 0xFF)).squareRoot() + 1
             }
             blackHole(accumulator + Double(counter & 1))
+            publishCpu(currentThreadCpuSeconds())
         }
+        publishCpu(currentThreadCpuSeconds())
     }
 
     @inline(never)
