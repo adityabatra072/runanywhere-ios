@@ -128,6 +128,19 @@ struct ConsumerAdvancedHubView: View {
                         subtitle: "Measure local model performance"
                     )
                 }
+
+                // Sits beside Benchmarks rather than inside it: that screen runs
+                // deterministic synthetic scenarios for regression tracking, this one
+                // answers where the accelerator choice changes the outcome, from real
+                // prompts.
+                NavigationLink(destination: AcceleratorBenchView()) {
+                    AdvancedFeatureRow(
+                        icon: "cpu.fill",
+                        color: AppColors.primaryAccent,
+                        title: "Accelerator Bench",
+                        subtitle: "Neural Engine vs CPU vs GPU, from prompts you type"
+                    )
+                }
             } header: {
                 Text("Management")
             } footer: {
