@@ -154,11 +154,33 @@ final class AcceleratorBenchTests: XCTestCase {
     // MARK: - Endurance arithmetic
 
     func testSustainComparesTheFinalMinuteToTheOpeningMinute() {
-        let flat = Self.endurance(first: 40, last: 40, totalTokens: 5_000, duration: 900)
+        // Token totals are consistent with the rates: ~32 tok/s average over
+        // 900 s against 40 tok/s decode windows, the gap being prompt
+        // processing between turns. Inconsistent fixtures are now rejected by
+        // the plausibility guard, which is the point of it.
+        let flat = Self.endurance(first: 40, last: 40, totalTokens: 28_800, duration: 900)
         XCTAssertEqual(try XCTUnwrap(flat.sustainPercent), 100, accuracy: 0.001)
 
-        let throttled = Self.endurance(first: 40, last: 24, totalTokens: 5_000, duration: 900)
+        let throttled = Self.endurance(first: 40, last: 24, totalTokens: 28_800, duration: 900)
         XCTAssertEqual(try XCTUnwrap(throttled.sustainPercent), 60, accuracy: 0.001)
+    }
+
+    /// A rate series that disagrees with the run's own wall-clock average is
+    /// mis-attributed, and sustain must be withheld rather than reported.
+    func testImplausibleRateSeriesWithholdsSustain() {
+        // The real M4 failure: 223,365 tok/s first minute against a 17.6 average.
+        let broken = Self.endurance(
+            first: 223_365, last: 0.28, totalTokens: 3_200, duration: 182
+        )
+        XCTAssertTrue(broken.rateSeriesIsSuspect)
+        XCTAssertNil(broken.sustainPercent, "a suspect series must not yield a sustain figure")
+        // The wall-clock average is still trustworthy and must survive.
+        XCTAssertEqual(broken.averageTokensPerSecond, 3_200 / 182, accuracy: 0.001)
+
+        // A plausible series still reports.
+        let sane = Self.endurance(first: 40, last: 38, totalTokens: 7_000, duration: 180)
+        XCTAssertFalse(sane.rateSeriesIsSuspect)
+        XCTAssertEqual(try XCTUnwrap(sane.sustainPercent), 95, accuracy: 0.001)
     }
 
     func testBatteryIsWithheldUntilTheRunCrossesTheApisResolution() {
@@ -276,9 +298,39 @@ final class AcceleratorBenchTests: XCTestCase {
         XCTAssertNil(collector.record(tokens: 1, minimumInterval: 5))
         XCTAssertNil(collector.record(tokens: 2, minimumInterval: 5))
         XCTAssertTrue(collector.samples.isEmpty)
-        // finalize ignores the interval so a short run still yields a point.
+        // The first of those calls anchored decode; finalize ignores the
+        // interval, so it yields the first real window.
         XCTAssertNotNil(collector.finalize(tokens: 3))
         XCTAssertEqual(collector.samples.count, 1)
+    }
+
+    /// Windows before the first token are prompt processing, not decode.
+    /// Counting them corrupts the rate: on an M4 the 6-chunk LFM2.5-2.6B, which
+    /// has no prefill graph and emits nothing for over a second, reported a
+    /// median of 0.19 tok/s against a true 22.46 because a one-token-over-five-
+    /// seconds prefill window is a legitimate 0.19 and passed the ">0" filter.
+    func testSamplingIgnoresEverythingBeforeTheFirstToken() {
+        let collector = BenchSampleCollector()
+
+        // Prompt processing: repeated calls with nothing generated yet.
+        XCTAssertNil(collector.record(tokens: 0, minimumInterval: 0))
+        XCTAssertNil(collector.record(tokens: 0, minimumInterval: 0))
+        XCTAssertTrue(collector.samples.isEmpty, "prefill must contribute no samples")
+        XCTAssertNil(collector.timeToFirstToken, "no token has arrived yet")
+
+        // The first token anchors decode and is itself not a window.
+        XCTAssertNil(collector.record(tokens: 1, minimumInterval: 0))
+        XCTAssertTrue(collector.samples.isEmpty)
+        XCTAssertNotNil(collector.timeToFirstToken)
+
+        // Only now do windows count, and they measure from the first token.
+        Thread.sleep(forTimeInterval: 0.05)
+        let sample = collector.record(tokens: 11, minimumInterval: 0)
+        let unwrapped = try? XCTUnwrap(sample)
+        XCTAssertNotNil(unwrapped)
+        // 10 tokens in ~0.05 s is on the order of 200/s, and must not be the
+        // sub-1 figure a prefill-inclusive window would produce.
+        XCTAssertGreaterThan(unwrapped?.tokensPerSecond ?? 0, 50)
     }
 
     func testCollectorReportsTheWorstThermalStateItSaw() {

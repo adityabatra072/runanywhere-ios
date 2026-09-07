@@ -364,7 +364,41 @@ final class AcceleratorBenchIntegrationTests: XCTestCase {
         return String(format: "%.\(places)f", value)
     }
 
+    /// Print AND append to a file in the host's documents directory.
+    ///
+    /// `print` is enough on a device, where xcodebuild pipes the test host's
+    /// stdout through. On macOS it does not: the run passes, the numbers are
+    /// gone, and the xcresult keeps no activities either. So every line also
+    /// lands on disk, and `logPath` is emitted first so the file can be found.
     private func log(_ message: String) {
         print("[bench] \(message)")
+        guard let url = Self.logURL else { return }
+        let line = "[bench] \(message)\n"
+        if let handle = try? FileHandle(forWritingTo: url) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: Data(line.utf8))
+        } else {
+            try? line.write(to: url, atomically: true, encoding: .utf8)
+        }
     }
+
+    private static let logURL: URL? = {
+        guard let dir = FileManager.default.urls(
+            for: .documentDirectory, in: .userDomainMask
+        ).first else { return nil }
+        let url = dir.appendingPathComponent("accelerator-bench-report.txt")
+        let header = "=== Accelerator Bench run \(Date()) ===\n"
+        if FileManager.default.fileExists(atPath: url.path) {
+            if let handle = try? FileHandle(forWritingTo: url) {
+                _ = try? handle.seekToEnd()
+                try? handle.write(contentsOf: Data(header.utf8))
+                try? handle.close()
+            }
+        } else {
+            try? header.write(to: url, atomically: true, encoding: .utf8)
+        }
+        print("[bench] logPath \(url.path)")
+        return url
+    }()
 }

@@ -417,9 +417,31 @@ struct BenchEnduranceResult: Identifiable, Sendable {
     /// Median tok/s over the final 60 s.
     let lastMinuteTokensPerSecond: Double?
 
+    /// The per-window rate series disagrees with the run's own wall-clock
+    /// average by more than any real workload could.
+    ///
+    /// Insurance against publishing nonsense. `averageTokensPerSecond` comes
+    /// from total tokens over wall time and is hard to get wrong; a minute
+    /// median many times larger or smaller means the windows were mis-attributed.
+    /// An M4 endurance leg once reported a first-minute median of 223,365 tok/s
+    /// against a true average of 17.62, because the series mixed engine token
+    /// counts with text-delta counts and jumped by the difference across a
+    /// near-zero window.
+    var rateSeriesIsSuspect: Bool {
+        guard averageTokensPerSecond > 0 else { return false }
+        let bounds = (low: averageTokensPerSecond / 5, high: averageTokensPerSecond * 5)
+        for rate in [firstMinuteTokensPerSecond, lastMinuteTokensPerSecond].compactMap({ $0 }) {
+            if rate > bounds.high || rate < bounds.low { return true }
+        }
+        return false
+    }
+
     /// Sustained throughput as a fraction of the opening minute. A flat line
     /// is the claim; a declining one is thermal throttling.
+    ///
+    /// Nil when the series is suspect — better no number than a wrong one.
     var sustainPercent: Double? {
+        guard !rateSeriesIsSuspect else { return nil }
         guard let first = firstMinuteTokensPerSecond, first > 0,
               let last = lastMinuteTokensPerSecond else { return nil }
         return last / first * 100

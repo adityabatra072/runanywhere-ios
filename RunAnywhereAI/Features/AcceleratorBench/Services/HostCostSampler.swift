@@ -98,6 +98,16 @@ final class BenchSampleCollector {
     private var lastCpu: Double
     private var lastTokens: Int
     private var worstThermal: ProcessInfo.ThermalState
+    /// When the first token arrived, i.e. when decode actually began.
+    ///
+    /// Windows before this point are prompt processing, not decode, and
+    /// including them corrupts the rate. A depth-chunked bundle has no prefill
+    /// graph, so it pushes prompt tokens through the whole chunk chain one at a
+    /// time and emits nothing for over a second: measured on an M4 with the
+    /// 6-chunk LFM2.5-2.6B, that made the reported median 0.19 tok/s against a
+    /// true 22.46. One token over five seconds is a real 0.19 — it just is not
+    /// decode, and it survives a naive "greater than zero" filter.
+    private var decodeStart: Date?
 
     private(set) var samples: [BenchSample] = []
     let startBattery: Double?
@@ -129,6 +139,25 @@ final class BenchSampleCollector {
     @discardableResult
     func record(tokens: Int, minimumInterval: TimeInterval = 0.25) -> BenchSample? {
         let now = Date()
+
+        // Nothing has been generated yet: still in prompt processing. Keep the
+        // counters moving forward so the first decode window is not credited
+        // with the prefill wait, and emit no sample.
+        guard tokens > 0 else {
+            lastWall = now
+            lastCpu = HostCostSampler.processCpuSeconds()
+            lastTokens = tokens
+            return nil
+        }
+        if decodeStart == nil {
+            // First token. Anchor decode here rather than at request start.
+            decodeStart = now
+            lastWall = now
+            lastCpu = HostCostSampler.processCpuSeconds()
+            lastTokens = tokens
+            return nil
+        }
+
         let window = now.timeIntervalSince(lastWall)
         guard window >= minimumInterval else { return nil }
 
@@ -156,9 +185,36 @@ final class BenchSampleCollector {
 
     /// Force a final reading regardless of the sampling window, so a short run
     /// still produces at least one point.
+    ///
+    /// Returns nil when nothing was ever generated, or when the only token
+    /// arrived at the instant decode was anchored — there is no window to
+    /// divide by in either case.
     @discardableResult
     func finalize(tokens: Int) -> BenchSample? {
         record(tokens: tokens, minimumInterval: 0)
+    }
+
+    /// Seconds spent in prompt processing before the first token, as this
+    /// collector saw it. Nil when nothing was generated.
+    var timeToFirstToken: TimeInterval? {
+        decodeStart.map { $0.timeIntervalSince(startWall) }
+    }
+
+    /// Begin a new generation inside the same run, re-anchoring decode.
+    ///
+    /// A run that cycles many prompts has one prefill per prompt, not one for
+    /// the run. Without re-anchoring, the window spanning each gap is credited
+    /// to decode and the series alternates between absurdly high and absurdly
+    /// low rates — an endurance leg on an M4 reported a first-minute median of
+    /// 223,365 tok/s and a final minute of 0.28.
+    ///
+    /// `tokens` is the cumulative count so far, so the next window measures
+    /// only what the new generation adds.
+    func beginSegment(atTokens tokens: Int) {
+        decodeStart = nil
+        lastWall = Date()
+        lastCpu = HostCostSampler.processCpuSeconds()
+        lastTokens = tokens
     }
 }
 

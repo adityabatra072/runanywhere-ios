@@ -300,6 +300,13 @@ final class AcceleratorBenchRunner {
             let collector = BenchSampleCollector()
             let started = Date()
             var totalTokens = 0
+            // The live series is driven purely by text deltas, never by the
+            // engine's token count. Mixing them made the series jump by the
+            // difference between the two across a near-zero window, which
+            // produced a first-minute median of 223,365 tok/s. The engine's
+            // count is still what `totalTokens` reports — it is authoritative
+            // for "how much work happened", just not for instantaneous rate.
+            var deltaTotal = 0
             var promptsDone = 0
             var promptIndex = 0
 
@@ -316,18 +323,22 @@ final class AcceleratorBenchRunner {
                     fraction: Date().timeIntervalSince(started) / duration
                 )
 
+                // Each prompt has its own prefill; re-anchor so the gap is not
+                // charged to decode.
+                collector.beginSegment(atTokens: deltaTotal)
                 let produced = try await streamCountingTokens(
                     spec: baseSpec.withPrompt(prompt),
                     modelName: contender.displayName
                 ) { deltaCount in
-                    if let sample = collector.record(tokens: totalTokens + deltaCount) {
+                    if let sample = collector.record(tokens: deltaTotal + deltaCount) {
                         self.onSample?(sample)
                     }
                 }
 
+                deltaTotal += produced.deltaCount
                 totalTokens += produced.outputTokens
                 promptsDone += 1
-                collector.finalize(tokens: totalTokens)
+                collector.finalize(tokens: deltaTotal)
             }
 
             let elapsed = Date().timeIntervalSince(started)
