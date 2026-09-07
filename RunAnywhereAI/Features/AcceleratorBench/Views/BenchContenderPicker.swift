@@ -89,7 +89,10 @@ private struct ContenderRow: View {
                         .foregroundStyle(AppColors.foreground)
                         .multilineTextAlignment(.leading)
                     HStack(spacing: AppSpacing.small) {
-                        BenchAcceleratorBadge(accelerator: contender.accelerator)
+                        BenchAcceleratorBadge(
+                            accelerator: contender.accelerator,
+                            engine: contender.engineLabel
+                        )
                         if contender.sizeBytes > 0 {
                             Text(BenchFormat.bytes(contender.sizeBytes))
                                 .appType(.meta)

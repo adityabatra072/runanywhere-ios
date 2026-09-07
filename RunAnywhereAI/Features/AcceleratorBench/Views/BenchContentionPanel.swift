@@ -275,7 +275,10 @@ private struct ContentionResultSection: View {
                 if let placement = result.placement {
                     BenchPlacementBadge(placement: placement)
                 } else {
-                    BenchAcceleratorBadge(accelerator: result.contender.accelerator)
+                    BenchAcceleratorBadge(
+                        accelerator: result.contender.accelerator,
+                        engine: result.contender.engineLabel
+                    )
                 }
             }
         }

@@ -1564,7 +1564,11 @@ enum ModelCatalogBootstrap {
         #if canImport(LlamaCPPRuntime)
         await registerLLM(
             id: "lfm2.5-2.6b-q4-k-m",
-            name: "LFM2.5 2.6B Q4_K_M (CPU)",
+            // Not "(CPU)": llama.cpp offloads all 15 layers to Metal on Apple
+            // hardware — `using device MTL0 (Apple A16 GPU)` on a phone, the
+            // same on a Mac — and LoadOptions.accelerator cannot currently
+            // force it off. Naming it CPU put a false claim on screen.
+            name: "LFM2.5 2.6B Q4_K_M (llama.cpp / Metal)",
             url: "https://huggingface.co/LiquidAI/LFM2.5-2.6B-GGUF/resolve/main/LFM2.5-2.6B-Q4_K_M.gguf",
             framework: .llamaCpp,
             memoryRequirement: 1_674_575_872,

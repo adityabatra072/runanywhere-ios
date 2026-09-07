@@ -53,6 +53,13 @@ struct AcceleratorBenchView: View {
             }
             provenanceSection
         }
+        #if DEBUG
+        // Auto-run screenshots are useless anchored at the top: results append
+        // to the end of the list, below the fold, and this pass cannot scroll.
+        .defaultScrollAnchor(
+            ProcessInfo.processInfo.arguments.contains("-RABenchAutoRun") ? .bottom : .top
+        )
+        #endif
         .navigationTitle("Accelerator Bench")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -68,11 +75,53 @@ struct AcceleratorBenchView: View {
         .sheet(isPresented: $showsSettings) {
             BenchSettingsSheet(viewModel: viewModel)
         }
-        .task { viewModel.refresh() }
+        .task {
+            viewModel.refresh()
+            #if DEBUG
+            await autoRunIfRequested()
+            #endif
+        }
         .onChange(of: viewModel.mode) { _, _ in
             viewModel.resetSelectionForCurrentMode()
         }
     }
+
+    // MARK: - Debug auto-run
+
+    #if DEBUG
+    /// Fill a prompt and start a run, for screenshotting the post-run state.
+    ///
+    /// The metric grid and the charts only exist after a run, and macOS UI
+    /// testing needs an Accessibility grant that an automated pass cannot give
+    /// itself — so without this the one part of the screen that actually gets
+    /// recorded is unverifiable. Compiled out of release builds.
+    ///
+    ///     open -a RunAnywhereAI.app --args -RAShowAcceleratorBench -RABenchAutoRun
+    private func autoRunIfRequested() async {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard arguments.contains("-RABenchAutoRun") else { return }
+
+        if let index = arguments.firstIndex(of: "-RABenchMode"),
+           arguments.indices.contains(index + 1),
+           let requested = BenchMode(rawValue: arguments[index + 1]) {
+            viewModel.mode = requested
+            viewModel.resetSelectionForCurrentMode()
+        }
+        if viewModel.prompt.isEmpty {
+            viewModel.prompt = AcceleratorBenchViewModel.promptSuggestions[0]
+        }
+
+        // Wait on the condition, not on a guess. A fixed 3-second sleep was not
+        // enough for the catalog refresh to land — `run()` found no selected
+        // contender, returned silently, and the screenshot showed an idle
+        // screen that looked like a rendering failure.
+        for _ in 0..<60 where !viewModel.canRun {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+        guard viewModel.canRun else { return }
+        viewModel.run()
+    }
+    #endif
 
     // MARK: - Mode
 

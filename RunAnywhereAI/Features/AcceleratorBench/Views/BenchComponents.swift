@@ -13,13 +13,16 @@ import SwiftUI
 
 struct BenchAcceleratorBadge: View {
     let accelerator: BenchAccelerator
+    /// Engine name. Pass the framework's, never the accelerator's guess — a
+    /// llama.cpp contender on Metal was being badged "MLX".
+    var engine: String?
     var showsEngine = true
 
     var body: some View {
         HStack(spacing: AppSpacing.xSmall) {
             Image(systemName: accelerator.symbol)
                 .font(.system(size: 10, weight: .semibold))
-            Text(showsEngine ? "\(accelerator.shortLabel) · \(accelerator.engineLabel)" : accelerator.shortLabel)
+            Text(label)
                 .appType(.chip)
         }
         .padding(.horizontal, AppSpacing.smallMedium)
@@ -32,6 +35,11 @@ struct BenchAcceleratorBadge: View {
             Capsule().stroke(accelerator.tint.opacity(0.3), lineWidth: AppSpacing.strokeThin)
         )
     }
+
+    private var label: String {
+        guard showsEngine, let engine else { return accelerator.shortLabel }
+        return "\(accelerator.shortLabel) · \(engine)"
+    }
 }
 
 /// Shows measured placement, and says so when it is not what was asked for.
@@ -43,7 +51,10 @@ struct BenchPlacementBadge: View {
 
     var body: some View {
         VStack(alignment: .trailing, spacing: AppSpacing.xxSmall) {
-            BenchAcceleratorBadge(accelerator: placement.actual)
+            BenchAcceleratorBadge(
+                accelerator: placement.actual,
+                engine: BenchAccelerator.engineLabel(for: placement.actualBackend)
+            )
             if placement.divergedFromRequest {
                 Label(
                     "asked for \(placement.requested.shortLabel), ran on \(placement.actual.shortLabel)",

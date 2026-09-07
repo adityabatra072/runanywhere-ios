@@ -14,8 +14,26 @@ import SwiftUI
 struct BenchPromptPanel: View {
     @Bindable var viewModel: AcceleratorBenchViewModel
 
+    /// Screenshot aid: results append to the end of the list, below the fold,
+    /// and an automated pass on macOS cannot scroll (UI testing needs an
+    /// Accessibility grant a script cannot give itself). With this flag the
+    /// result cards render FIRST, so the part that actually gets recorded can
+    /// be reviewed. Compiled out of release builds.
+    #if DEBUG
+    private var showsResultsFirst: Bool {
+        ProcessInfo.processInfo.arguments.contains("-RABenchAutoRun")
+    }
+    #endif
+
     var body: some View {
         Group {
+            #if DEBUG
+            if showsResultsFirst {
+                ForEach(viewModel.passResults) { pass in
+                    PassResultSection(pass: pass, viewModel: viewModel)
+                }
+            }
+            #endif
             promptSection
             settingsSection
             if !viewModel.streamingAnswer.isEmpty && viewModel.isRunning {
@@ -255,12 +273,17 @@ private struct PassResultSection: View {
                         + BenchFormat.milliseconds(pass.wallMs) + " wall"
                 )
 
+                // Not "cold" / "warm". NeuRT's content-addressed cache lives on
+                // disk and survives app launches, so the first load of a second
+                // launch is already warm and there is no way to tell from in
+                // here. The runner and the progress line say "first this
+                // session"; this tile used to contradict them.
                 BenchMetricTile(
-                    title: pass.wasWarmLoad ? "Load (warm)" : "Load (cold)",
+                    title: pass.wasWarmLoad ? "Load (repeat)" : "Load (first this session)",
                     value: BenchFormat.milliseconds(pass.loadMs),
                     footnote: pass.wasWarmLoad
-                        ? "from the compiled-graph cache"
-                        : "first load compiles and specializes the graph"
+                        ? "the compiled graph was already cached"
+                        : "may compile and specialize the graph, if the on-disk cache is empty"
                 )
 
                 if viewModel.showsThermal {
@@ -289,6 +312,17 @@ private struct PassResultSection: View {
                         )
                     ]
                 )
+            }
+
+            if pass.samples.count <= 2 {
+                // Measured: the 6-chunk 2.6B emits roughly one text delta per
+                // generation, so there are no windows to plot. Saying that is
+                // better than an empty space where a chart should be.
+                Text("No throughput chart: this engine did not stream enough "
+                    + "separate updates to plot a rate over time. The figures above are "
+                    + "unaffected — they come from the engine's own totals.")
+                    .appType(.caption)
+                    .foregroundStyle(AppColors.mutedForeground)
             }
 
             DisclosureGroup("Answer") {

@@ -85,8 +85,36 @@ private struct ConsumerMacShell: View {
         ))
     }
 
+    /// DEBUG-only: open the Accelerator Bench directly at launch.
+    ///
+    /// macOS UI testing needs an Accessibility grant for the test runner, which
+    /// is a GUI permission and therefore unavailable to an automated pass. This
+    /// launch argument makes the screen reachable for screenshotting without
+    /// driving any clicks:
+    ///
+    ///     open -a RunAnywhereAI.app --args -RAShowAcceleratorBench
+    ///
+    /// Compiled out of release builds entirely.
+    #if DEBUG
+    private static let opensAcceleratorBench = ProcessInfo.processInfo.arguments
+        .contains("-RAShowAcceleratorBench")
+    #endif
+
     @ViewBuilder
     private var detail: some View {
+        #if DEBUG
+        if Self.opensAcceleratorBench {
+            NavigationStack { AcceleratorBenchView() }
+        } else {
+            standardDetail
+        }
+        #else
+        standardDetail
+        #endif
+    }
+
+    @ViewBuilder
+    private var standardDetail: some View {
         switch selection {
         case .models:
             NavigationStack { SimplifiedModelsView() }

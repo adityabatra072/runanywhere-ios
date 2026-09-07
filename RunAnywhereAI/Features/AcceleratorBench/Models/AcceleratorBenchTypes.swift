@@ -98,13 +98,31 @@ enum BenchAccelerator: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// The engine that actually executes it, for the provenance line.
+    /// Fallback engine name when no framework is known.
+    ///
+    /// Prefer `engineLabel(for:)`. This one guesses from the silicon, which is
+    /// wrong wherever two engines share an accelerator: it labelled a
+    /// llama.cpp-on-Metal contender "MLX" on screen.
     var engineLabel: String {
         switch self {
         case .ane: return "NeuRT"
-        case .gpu: return "MLX"
-        case .cpu: return "llama.cpp"
+        case .gpu: return "GPU"
+        case .cpu: return "CPU"
         case .other: return "—"
+        }
+    }
+
+    /// The engine that actually executes this, named from the framework.
+    static func engineLabel(for framework: InferenceFramework) -> String? {
+        switch framework {
+        case .coreml: return "NeuRT"
+        case .mlx: return "MLX"
+        case .llamaCpp: return "llama.cpp"
+        case .onnx: return "ONNX"
+        case .sherpa: return "Sherpa"
+        case .executorch: return "ExecuTorch"
+        case .tflite: return "TFLite"
+        default: return nil
         }
     }
 
@@ -180,13 +198,14 @@ struct BenchContender: Identifiable, Hashable, Sendable {
     /// `BenchPlacement.actual` instead.
     var accelerator: BenchAccelerator { requested }
 
-    /// Names the policy too, so two rows for one model are distinguishable.
-    var displayName: String {
-        needsPolicyInName ? "\(modelName) — \(requested.shortLabel)" : modelName
-    }
+    /// The model's own name. No accelerator suffix: one model is one
+    /// contender now, and appending the policy produced "…(CPU) — GPU".
+    var displayName: String { modelName }
 
-    /// Only frameworks that can genuinely go either way get the suffix.
-    private var needsPolicyInName: Bool { framework == .llamaCpp }
+    /// Engine name for the badge, from the framework rather than the silicon.
+    var engineLabel: String {
+        BenchAccelerator.engineLabel(for: framework) ?? requested.engineLabel
+    }
 
     init(model: RAModelInfo, requesting requested: BenchAccelerator? = nil) {
         self.modelId = model.id
