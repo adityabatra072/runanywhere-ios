@@ -37,7 +37,25 @@ final class AcceleratorBenchViewModel {
     // MARK: - Prompt inputs
 
     var prompt: String = ""
-    var systemPrompt: String = "You are a concise, helpful assistant. Answer directly."
+    /// Default system prompt, written to stop preamble.
+    ///
+    /// LFM2.5-2.6B opens with commentary about the request — "The user is
+    /// asking for a concise explanation in two sentences about why on-device
+    /// models are more private…" — before answering. `ReasoningOptions(mode:
+    /// .off)` does NOT fix it: the model emits no thinking tags for the SDK to
+    /// strip, it simply writes preamble as ordinary prose. Only the prompt can
+    /// stop that, and on camera it is the difference between a model answering
+    /// and a model narrating.
+    ///
+    /// Measured caveat: on the LFM2.5-2.6B ANE bundle this prompt did not help
+    /// either, and the reason looks like the system prompt never arriving —
+    /// growing it from ~6 tokens to ~35 left the reported `inputTokens`
+    /// unchanged at 33. Not confirmed at the engine level, but strong enough
+    /// that any shot showing answer TEXT should use the 230M or 350M, which
+    /// answer cleanly. The 2.6B is still right for the contention shot, where
+    /// no answer is on screen.
+    var systemPrompt: String = "Answer the question directly. Do not restate the question, "
+        + "describe what is being asked, or explain your approach. Begin with the answer itself."
     var maxTokens: Int = 200
     let maxTokenOptions = [64, 128, 200, 400, 800]
 
@@ -110,6 +128,15 @@ final class AcceleratorBenchViewModel {
 
     var showsHostCpu = true
     var showsThermal = true
+
+    /// Ask the engine to suppress chain of thought. On by default.
+    ///
+    /// Where a model emits real thinking tags this keeps thought tokens out of
+    /// the token total, so throughput does not partly measure how much the
+    /// model deliberated. Measured caveat: it had **no effect** on
+    /// LFM2.5-2.6B through NeuRT, which writes its preamble as plain prose
+    /// with no tags to strip — that one needs the system prompt above.
+    var suppressThinking = true
 
     // MARK: - Results
 
@@ -251,32 +278,7 @@ final class AcceleratorBenchViewModel {
         runTask = Task { [weak self] in
             guard let self else { return }
             do {
-                switch self.mode {
-                case .prompt:
-                    self.passResults = try await self.runner.runPromptPass(
-                        contenders: contenders,
-                        prompt: self.prompt,
-                        maxTokens: self.maxTokens,
-                        systemPrompt: system
-                    )
-                case .contention:
-                    self.contentionResults = try await self.runner.runContention(
-                        contenders: contenders,
-                        prompt: self.prompt,
-                        maxTokens: self.contentionMaxTokens,
-                        systemPrompt: system,
-                        loadThreads: self.loadThreads,
-                        repetitions: self.contentionRepetitions
-                    )
-                case .endurance:
-                    self.enduranceResults = try await self.runner.runEndurance(
-                        contenders: contenders,
-                        prompts: self.endurancePrompts,
-                        duration: TimeInterval(self.enduranceMinutes * 60),
-                        maxTokens: self.enduranceMaxTokens,
-                        systemPrompt: system
-                    )
-                }
+                try await self.execute(contenders: contenders, systemPrompt: system)
             } catch is CancellationError {
                 self.runner.stopSyntheticLoad()
             } catch {
@@ -287,6 +289,41 @@ final class AcceleratorBenchViewModel {
             self.isRunning = false
             self.progress = .idle
             self.runStartedAt = nil
+        }
+    }
+
+    /// Dispatch to the active mode. Split out of `run()` so that function stays
+    /// about lifecycle — resetting state, owning the task, clearing it — rather
+    /// than also carrying three call signatures.
+    private func execute(contenders: [BenchContender], systemPrompt: String?) async throws {
+        switch mode {
+        case .prompt:
+            passResults = try await runner.runPromptPass(
+                contenders: contenders,
+                prompt: prompt,
+                maxTokens: maxTokens,
+                systemPrompt: systemPrompt,
+                suppressThinking: suppressThinking
+            )
+        case .contention:
+            contentionResults = try await runner.runContention(
+                contenders: contenders,
+                prompt: prompt,
+                maxTokens: contentionMaxTokens,
+                systemPrompt: systemPrompt,
+                loadThreads: loadThreads,
+                repetitions: contentionRepetitions,
+                suppressThinking: suppressThinking
+            )
+        case .endurance:
+            enduranceResults = try await runner.runEndurance(
+                contenders: contenders,
+                prompts: endurancePrompts,
+                duration: TimeInterval(enduranceMinutes * 60),
+                maxTokens: enduranceMaxTokens,
+                systemPrompt: systemPrompt,
+                suppressThinking: suppressThinking
+            )
         }
     }
 

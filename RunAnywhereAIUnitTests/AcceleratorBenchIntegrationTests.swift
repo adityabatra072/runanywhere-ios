@@ -112,7 +112,9 @@ final class AcceleratorBenchIntegrationTests: XCTestCase {
             contenders: [contender],
             prompt: "In two sentences, why does an on-device model beat a cloud one for privacy?",
             maxTokens: 96,
-            systemPrompt: "You are a concise assistant."
+            systemPrompt: "Answer the question directly. Do not restate the question, "
+                + "describe what is being asked, or explain your approach. Begin with "
+                + "the answer itself."
         )
 
         let pass = try XCTUnwrap(results.first)

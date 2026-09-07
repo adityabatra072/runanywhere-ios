@@ -324,6 +324,17 @@ struct BenchSettingsSheet: View {
                 }
 
                 Section {
+                    Toggle("Suppress chain of thought", isOn: $viewModel.suppressThinking)
+                } header: {
+                    Label("Generation", systemImage: "brain")
+                } footer: {
+                    Text("On by default. A thinking model answers with commentary about the "
+                        + "request rather than an answer, and its thought tokens count toward the "
+                        + "token total — so throughput would partly measure how much the model "
+                        + "deliberated, which is not a property of the accelerator.")
+                }
+
+                Section {
                     Toggle("Rank contenders by throughput", isOn: $viewModel.showsThroughputRanking)
                 } header: {
                     Label("Throughput ranking", systemImage: "chart.bar")

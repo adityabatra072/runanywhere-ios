@@ -58,13 +58,24 @@ struct BenchPassSpec: Sendable {
     /// Whether to publish partial text as it streams. Off for the comparison
     /// modes, where nobody reads the answer and the callback is pure overhead.
     let streamsAnswer: Bool
+    /// Suppress the model's chain of thought.
+    ///
+    /// Two reasons, and the second is the one that matters. A thinking model
+    /// answers the camera with meta-commentary — the 2.6B's first measured
+    /// answer opened "The user is asking for a concise explanation in two
+    /// sentences about why on-device models are more private…" instead of
+    /// answering. And thought tokens count toward `outputTokens`, so leaving
+    /// them on means the reported tok/s is partly a measure of how much the
+    /// model deliberated, which is not a property of the accelerator.
+    let suppressThinking: Bool
 
     func withPrompt(_ prompt: String) -> BenchPassSpec {
         BenchPassSpec(
             prompt: prompt,
             maxTokens: maxTokens,
             systemPrompt: systemPrompt,
-            streamsAnswer: streamsAnswer
+            streamsAnswer: streamsAnswer,
+            suppressThinking: suppressThinking
         )
     }
 }
@@ -115,7 +126,8 @@ final class AcceleratorBenchRunner {
         contenders: [BenchContender],
         prompt: String,
         maxTokens: Int,
-        systemPrompt: String?
+        systemPrompt: String?,
+        suppressThinking: Bool = true
     ) async throws -> [BenchPassResult] {
         guard !contenders.isEmpty else { throw AcceleratorBenchError.noContenders }
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -137,7 +149,8 @@ final class AcceleratorBenchRunner {
                     prompt: trimmed,
                     maxTokens: maxTokens,
                     systemPrompt: systemPrompt,
-                    streamsAnswer: true
+                    streamsAnswer: true,
+                    suppressThinking: suppressThinking
                 ),
                 load: load
             )
@@ -173,7 +186,8 @@ final class AcceleratorBenchRunner {
         maxTokens: Int,
         systemPrompt: String?,
         loadThreads: Int,
-        repetitions: Int = 3
+        repetitions: Int = 3,
+        suppressThinking: Bool = true
     ) async throws -> [BenchContentionResult] {
         guard !contenders.isEmpty else { throw AcceleratorBenchError.noContenders }
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -187,7 +201,8 @@ final class AcceleratorBenchRunner {
             prompt: trimmed,
             maxTokens: maxTokens,
             systemPrompt: systemPrompt,
-            streamsAnswer: false
+            streamsAnswer: false,
+            suppressThinking: suppressThinking
         )
         let totalSteps = Double(contenders.count * reps * 2)
         var step = 0.0
@@ -276,7 +291,8 @@ final class AcceleratorBenchRunner {
         prompts: [String],
         duration: TimeInterval,
         maxTokens: Int,
-        systemPrompt: String?
+        systemPrompt: String?,
+        suppressThinking: Bool = true
     ) async throws -> [BenchEnduranceResult] {
         guard !contenders.isEmpty else { throw AcceleratorBenchError.noContenders }
         let pool = prompts
@@ -290,7 +306,8 @@ final class AcceleratorBenchRunner {
             prompt: "",
             maxTokens: maxTokens,
             systemPrompt: systemPrompt,
-            streamsAnswer: false
+            streamsAnswer: false,
+            suppressThinking: suppressThinking
         )
 
         for contender in contenders {
@@ -547,7 +564,8 @@ final class AcceleratorBenchRunner {
                     // the quiet and loaded passes and contaminate the delta.
                     temperature: 0.0,
                     seed: 0,
-                    systemPrompt: spec.systemPrompt
+                    systemPrompt: spec.systemPrompt,
+                    reasoning: ReasoningOptions(mode: spec.suppressThinking ? .off : .on)
                 )
             )
 
