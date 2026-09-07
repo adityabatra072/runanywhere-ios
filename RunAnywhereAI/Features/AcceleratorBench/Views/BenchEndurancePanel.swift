@@ -20,8 +20,23 @@ import SwiftUI
 struct BenchEndurancePanel: View {
     @Bindable var viewModel: AcceleratorBenchViewModel
 
+    /// Screenshot aid — see BenchPromptPanel. Results append below the fold and
+    /// an automated pass on macOS cannot scroll.
+    #if DEBUG
+    private var showsResultsFirst: Bool {
+        ProcessInfo.processInfo.arguments.contains("-RABenchAutoRun")
+    }
+    #endif
+
     var body: some View {
         Group {
+            #if DEBUG
+            if showsResultsFirst {
+                ForEach(viewModel.enduranceResults) { result in
+                    EnduranceResultSection(result: result)
+                }
+            }
+            #endif
             durationSection
             promptPoolSection
             if viewModel.isRunning {

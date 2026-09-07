@@ -17,8 +17,24 @@ import SwiftUI
 struct BenchContentionPanel: View {
     @Bindable var viewModel: AcceleratorBenchViewModel
 
+    /// Screenshot aid — see BenchPromptPanel. Results append below the fold and
+    /// an automated pass on macOS cannot scroll.
+    #if DEBUG
+    private var showsResultsFirst: Bool {
+        ProcessInfo.processInfo.arguments.contains("-RABenchAutoRun")
+    }
+    #endif
+
     var body: some View {
         Group {
+            #if DEBUG
+            if showsResultsFirst, !viewModel.contentionResults.isEmpty {
+                verdictSection
+                ForEach(viewModel.contentionResults) { result in
+                    ContentionResultSection(result: result)
+                }
+            }
+            #endif
             promptSection
             loadSection
             if !viewModel.contentionResults.isEmpty {
