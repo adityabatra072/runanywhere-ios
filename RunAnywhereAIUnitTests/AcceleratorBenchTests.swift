@@ -165,6 +165,32 @@ final class AcceleratorBenchTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(throttled.sustainPercent), 60, accuracy: 0.001)
     }
 
+    /// An engine that does not stream token-by-token yields no rate series,
+    /// which is a different statement from "the run was too short".
+    func testNoRateSeriesMeansNoSustainClaim() {
+        let noSeries = BenchEnduranceResult(
+            contender: Self.contender(),
+            placement: Self.placement(),
+            // One zero-token window per prompt: what the 6-chunk 2.6B produced.
+            samples: (0..<50).map { Self.sample(elapsed: Double($0) * 3.6, tokensPerSecond: 0) },
+            totalTokens: 3_200,
+            promptsCompleted: 50,
+            duration: 182,
+            hostCpuSeconds: 10.07,
+            peakThermal: .nominal,
+            startBattery: nil,
+            endBattery: nil,
+            startedAt: Date(),
+            firstMinuteTokensPerSecond: nil,
+            lastMinuteTokensPerSecond: nil
+        )
+        XCTAssertFalse(noSeries.hasUsableRateSeries)
+        XCTAssertNil(noSeries.sustainPercent)
+        // The wall-clock figures do not depend on the series and must survive.
+        XCTAssertEqual(noSeries.averageTokensPerSecond, 3_200 / 182, accuracy: 0.001)
+        XCTAssertEqual(noSeries.hostCoresHeld, 10.07 / 182, accuracy: 0.001)
+    }
+
     /// A rate series that disagrees with the run's own wall-clock average is
     /// mis-attributed, and sustain must be withheld rather than reported.
     func testImplausibleRateSeriesWithholdsSustain() {
@@ -551,7 +577,10 @@ private extension AcceleratorBenchTests {
         BenchEnduranceResult(
             contender: contender(),
             placement: placement(),
-            samples: [],
+            // Enough non-zero windows to clear `hasUsableRateSeries`, so these
+            // fixtures exercise the sustain arithmetic rather than the
+            // no-series guard.
+            samples: (0..<8).map { sample(elapsed: Double($0) * 10, tokensPerSecond: first) },
             totalTokens: totalTokens,
             promptsCompleted: 20,
             duration: duration,

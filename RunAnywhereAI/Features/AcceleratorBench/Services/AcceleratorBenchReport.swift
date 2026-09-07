@@ -160,6 +160,12 @@ enum AcceleratorBenchReport {
             }
             if let sustain = result.sustainPercent {
                 lines.append("- **sustained \(fmt(sustain, 0)) % of the opening minute**")
+            } else if !result.hasUsableRateSeries {
+                lines.append("- sustain not reported: this engine does not stream token-by-token, "
+                    + "so there is no rate series to compare. The average above is unaffected.")
+            } else if result.rateSeriesIsSuspect {
+                lines.append("- sustain not reported: the sampled windows disagree with the run's "
+                    + "own wall-clock average")
             }
             lines.append("- host CPU \(fmt(result.hostCoresHeld, 2)) cores held for the whole run")
             lines.append("- peak thermal state \(result.peakThermal.benchLabel)")

@@ -287,6 +287,14 @@ private struct EnduranceResultSection: View {
 
     private var sustainFootnote: String {
         guard let sustain = result.sustainPercent else {
+            if !result.hasUsableRateSeries {
+                return "this engine does not stream token-by-token, so there is no rate series "
+                    + "to compare. The wall-clock average and host CPU above are unaffected."
+            }
+            if result.rateSeriesIsSuspect {
+                return "the sampled windows disagree with the run's own wall-clock average, so "
+                    + "no sustain figure is reported"
+            }
             return "needs at least two minutes of samples to compare"
         }
         return sustain >= 95

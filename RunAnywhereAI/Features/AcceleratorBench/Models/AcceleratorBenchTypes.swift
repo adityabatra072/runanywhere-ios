@@ -417,6 +417,20 @@ struct BenchEnduranceResult: Identifiable, Sendable {
     /// Median tok/s over the final 60 s.
     let lastMinuteTokensPerSecond: Double?
 
+    /// Whether the run produced enough non-zero windows to talk about rate
+    /// over time at all.
+    ///
+    /// Not every engine streams finely enough. The 6-chunk LFM2.5-2.6B on
+    /// NeuRT emits roughly one text delta per generation, so a 3-minute,
+    /// 50-prompt run yielded 50 windows of zero tokens each and no usable
+    /// series — while the single-chunk 350M on an iPhone yielded 452 usable
+    /// windows over 90 s. Sustain is a property of the series, so where there
+    /// is no series there is no sustain, and that is a different statement
+    /// from "the run was too short".
+    var hasUsableRateSeries: Bool {
+        samples.filter { $0.tokensPerSecond > 0 }.count >= 4
+    }
+
     /// The per-window rate series disagrees with the run's own wall-clock
     /// average by more than any real workload could.
     ///
@@ -441,7 +455,7 @@ struct BenchEnduranceResult: Identifiable, Sendable {
     ///
     /// Nil when the series is suspect — better no number than a wrong one.
     var sustainPercent: Double? {
-        guard !rateSeriesIsSuspect else { return nil }
+        guard hasUsableRateSeries, !rateSeriesIsSuspect else { return nil }
         guard let first = firstMinuteTokensPerSecond, first > 0,
               let last = lastMinuteTokensPerSecond else { return nil }
         return last / first * 100
