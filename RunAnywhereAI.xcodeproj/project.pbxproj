@@ -61,8 +61,6 @@
 			dstPath = "";
 			dstSubfolderSpec = 13;
 			files = (
-				54398D332F4939A7009D6B51 /* RunAnywhereActivityExtensionExtension.appex in Embed Foundation Extensions */,
-				54398AC52F492D1D009D6B51 /* RunAnywhereKeyboard.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -307,8 +305,6 @@
 			buildRules = (
 			);
 			dependencies = (
-				54398AC42F492D1D009D6B51 /* PBXTargetDependency */,
-				54398D322F4939A7009D6B51 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				5480A1F22E2F250200337F2F /* RunAnywhereAI */,
@@ -533,7 +529,7 @@
 				CODE_SIGN_ENTITLEMENTS = RunAnywhereKeyboard/RunAnywhereKeyboard.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 12;
-				DEVELOPMENT_TEAM = L86FH3K93L;
+				DEVELOPMENT_TEAM = C6KNN8Q7UY;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = RunAnywhereKeyboard/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = RunAnywhereKeyboard;
@@ -564,7 +560,7 @@
 				CODE_SIGN_ENTITLEMENTS = RunAnywhereKeyboard/RunAnywhereKeyboard.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 12;
-				DEVELOPMENT_TEAM = L86FH3K93L;
+				DEVELOPMENT_TEAM = C6KNN8Q7UY;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = RunAnywhereKeyboard/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = RunAnywhereKeyboard;
@@ -597,7 +593,7 @@
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 12;
-				DEVELOPMENT_TEAM = L86FH3K93L;
+				DEVELOPMENT_TEAM = C6KNN8Q7UY;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = RunAnywhereActivityExtension/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = RunAnywhereActivityExtension;
@@ -629,7 +625,7 @@
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 12;
-				DEVELOPMENT_TEAM = L86FH3K93L;
+				DEVELOPMENT_TEAM = C6KNN8Q7UY;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = RunAnywhereActivityExtension/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = RunAnywhereActivityExtension;
@@ -779,11 +775,11 @@
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = RunAnywhereAI/RunAnywhereAI.entitlements;
+				CODE_SIGN_ENTITLEMENTS = BenchDemo.entitlements;
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 12;
-				DEVELOPMENT_TEAM = L86FH3K93L;
+				DEVELOPMENT_TEAM = C6KNN8Q7UY;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = RunAnywhereAI/Info.plist;
@@ -811,7 +807,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.5;
 				MARKETING_VERSION = 0.39;
 				OTHER_LDFLAGS = "-all_load";
-				PRODUCT_BUNDLE_IDENTIFIER = com.runanywhere.RunAnywhere;
+				PRODUCT_BUNDLE_IDENTIFIER = com.adityabatra.rabench;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
@@ -829,11 +825,11 @@
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = RunAnywhereAI/RunAnywhereAI.entitlements;
+				CODE_SIGN_ENTITLEMENTS = BenchDemo.entitlements;
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 12;
-				DEVELOPMENT_TEAM = L86FH3K93L;
+				DEVELOPMENT_TEAM = C6KNN8Q7UY;
 				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -865,7 +861,7 @@
 					"-all_load",
 					"-Wl,-exported_symbols_list,$(SRCROOT)/RunAnywhereExportedSymbols.txt",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.runanywhere.RunAnywhere;
+				PRODUCT_BUNDLE_IDENTIFIER = com.adityabatra.rabench;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
@@ -884,12 +880,12 @@
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 12;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = C6KNN8Q7UY;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.5;
 				MACOSX_DEPLOYMENT_TARGET = 14.5;
 				MARKETING_VERSION = 0.39;
-				PRODUCT_BUNDLE_IDENTIFIER = com.runanywhere.RunAnywhereTests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.adityabatra.rabenchTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
@@ -911,7 +907,7 @@
 				IPHONEOS_DEPLOYMENT_TARGET = 17.5;
 				MACOSX_DEPLOYMENT_TARGET = 14.5;
 				MARKETING_VERSION = 0.39;
-				PRODUCT_BUNDLE_IDENTIFIER = com.runanywhere.RunAnywhereTests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.adityabatra.rabenchTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
@@ -928,12 +924,12 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 12;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = C6KNN8Q7UY;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.5;
 				MACOSX_DEPLOYMENT_TARGET = 14.5;
 				MARKETING_VERSION = 0.39;
-				PRODUCT_BUNDLE_IDENTIFIER = com.runanywhere.RunAnywhereUITests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.adityabatra.rabenchUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
@@ -954,7 +950,7 @@
 				IPHONEOS_DEPLOYMENT_TARGET = 17.5;
 				MACOSX_DEPLOYMENT_TARGET = 14.5;
 				MARKETING_VERSION = 0.39;
-				PRODUCT_BUNDLE_IDENTIFIER = com.runanywhere.RunAnywhereUITests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.adityabatra.rabenchUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
@@ -1025,16 +1021,12 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCRemoteSwiftPackageReference section */
-		58E021172E52A86000B722EF /* XCRemoteSwiftPackageReference "runanywhere-swift" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/RunanywhereAI/runanywhere-swift.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 0.20.34;
-			};
+/* Begin XCLocalSwiftPackageReference section */
+		58E021172E52A86000B722EF /* XCLocalSwiftPackageReference "runanywhere-swift" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Vendor/runanywhere-swift;
 		};
-/* End XCRemoteSwiftPackageReference section */
+/* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		541C59D92E63772A00DD7839 /* RunAnywhere */ = {

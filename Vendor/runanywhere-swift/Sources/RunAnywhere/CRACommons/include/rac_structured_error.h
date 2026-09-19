@@ -1,0 +1,6 @@
+#ifndef RAC_SWIFT_STRUCTURED_ERROR_FORWARDER_H
+#define RAC_SWIFT_STRUCTURED_ERROR_FORWARDER_H
+
+#include "rac/core/rac_structured_error.h"
+
+#endif  // RAC_SWIFT_STRUCTURED_ERROR_FORWARDER_H

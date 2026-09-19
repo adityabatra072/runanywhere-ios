@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- LOCAL DEMO BUILD ONLY. Not committed.
+         The shipped RunAnywhereAI.entitlements additionally carries App Groups,
+         HealthKit and com.apple.developer.kernel.increased-memory-limit, all of
+         which need the RunAnywhere org team. This trimmed copy is what a
+         personal team can provision, and it is enough for the Accelerator
+         Bench: no app-group IPC, no HealthKit tool, and the 350M ANE bundle's
+         ~575 MB peak RSS is far under the default iOS jetsam ceiling.
+         The 2.6B (3.21 GiB) needs the real entitlements on iOS, but not on
+         macOS, which has no equivalent cap. -->
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+    <key>com.apple.security.files.user-selected.read-only</key>
+    <true/>
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <key>com.apple.security.network.server</key>
+    <true/>
+    <key>com.apple.security.device.camera</key>
+    <true/>
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+</dict>
+</plist>
